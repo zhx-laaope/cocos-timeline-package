@@ -432,6 +432,9 @@ Editor.Panel.extend({
 		// 时间轴点击
 		const ruler = this.$el('#timelineRuler');
 		ruler.addEventListener('click', (e) => this.onRulerClick(e));
+
+		// 键盘快捷键
+		document.addEventListener('keydown', (e) => this.onKeyDown(e));
 	},
 
 	bindDialogEvents() {
@@ -993,11 +996,18 @@ Editor.Panel.extend({
 			}
 
 			item.innerHTML = `
-				<div class="track-list-item-name">${track.name || 'Track ' + (index + 1)}</div>
-				<div class="track-list-item-info">${track.type} - ${track.targetPath || '.'}</div>
+				<div class="track-list-item-content">
+					<div class="track-list-item-name">${track.name || 'Track ' + (index + 1)}</div>
+					<div class="track-list-item-info">${track.type} - ${track.targetPath || '.'}</div>
+				</div>
+				<button class="track-delete-btn" title="删除轨道">×</button>
 			`;
 
-			item.addEventListener('click', () => this.onSelectTrack(index));
+			item.querySelector('.track-list-item-content').addEventListener('click', () => this.onSelectTrack(index));
+			item.querySelector('.track-delete-btn').addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.onDeleteTrack(index);
+			});
 
 			list.appendChild(item);
 		});
@@ -1288,6 +1298,80 @@ Editor.Panel.extend({
 		this.setStatus('Timeline 由当前 Prefab 自动绑定，不能手动新建', 'error');
 	},
 
+	onDeleteTrack(trackIndex) {
+		if (!this.ensureTimelineEditable()) return;
+
+		const track = editorState.timelineData.tracks[trackIndex];
+		if (!track) return;
+
+		const trackName = track.name || 'Track ' + (trackIndex + 1);
+		if (!confirm(`确定要删除轨道 "${trackName}" 吗？`)) {
+			return;
+		}
+
+		editorState.timelineData.tracks.splice(trackIndex, 1);
+
+		// 清除选中状态
+		if (editorState.selectedTrack === trackIndex) {
+			editorState.selectedTrack = null;
+			editorState.selectedClip = null;
+		} else if (editorState.selectedTrack > trackIndex) {
+			editorState.selectedTrack--;
+		}
+
+		this.markDirty();
+		this.renderTimeline();
+		this.updateClipProperties();
+		this.setStatus('已删除轨道: ' + trackName, 'success');
+	},
+
+	onDeleteClip(trackIndex, clipIndex) {
+		if (!this.ensureTimelineEditable()) return;
+
+		const track = editorState.timelineData.tracks[trackIndex];
+		if (!track || !track.clips || !track.clips[clipIndex]) return;
+
+		const clip = track.clips[clipIndex];
+		const clipName = clip.name || 'Clip ' + (clipIndex + 1);
+
+		if (!confirm(`确定要删除片段 "${clipName}" 吗？`)) {
+			return;
+		}
+
+		track.clips.splice(clipIndex, 1);
+
+		// 清除选中状态
+		editorState.selectedClip = null;
+
+		this.markDirty();
+		this.renderTimeline();
+		this.updateClipProperties();
+		this.setStatus('已删除片段: ' + clipName, 'success');
+	},
+
+	onKeyDown(e) {
+		// 如果焦点在输入框，不处理删除快捷键
+		if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
+			return;
+		}
+
+		if (!editorState.isTimelineEditable) return;
+
+		// Delete 或 Backspace 键删除
+		if (e.key === 'Delete' || e.key === 'Backspace') {
+			e.preventDefault();
+
+			// 删除选中的片段
+			if (editorState.selectedTrack !== null && editorState.selectedClip !== null) {
+				this.onDeleteClip(editorState.selectedTrack, editorState.selectedClip);
+			}
+			// 删除选中的轨道（如果没有选中片段）
+			else if (editorState.selectedTrack !== null) {
+				this.onDeleteTrack(editorState.selectedTrack);
+			}
+		}
+	},
+
 	// 更新片段属性面板
 	updateClipProperties() {
 		const panel = this.$el('#clipProperties');
@@ -1321,7 +1405,15 @@ Editor.Panel.extend({
 				<label>持续时间（秒）</label>
 				<input type="number" value="${clip.duration || 0}" step="0.1" data-prop="duration">
 			</div>
+			<div class="property-group">
+				<button id="btnDeleteClip" class="btn btn-danger" style="width: 100%;">删除片段</button>
+			</div>
 		`;
+
+		// 绑定删除按钮
+		panel.querySelector('#btnDeleteClip').addEventListener('click', () => {
+			this.onDeleteClip(editorState.selectedTrack, editorState.selectedClip);
+		});
 
 		// 绑定属性变化事件
 		panel.querySelectorAll('input').forEach(input => {

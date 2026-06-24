@@ -98,6 +98,17 @@ body {
 	border-color: #1177bb;
 }
 
+.btn-danger {
+	background: #c93535;
+	border-color: #c93535;
+	color: #fff;
+}
+
+.btn-danger:hover {
+	background: #e04545;
+	border-color: #e04545;
+}
+
 .btn-success {
 	background: #0e7d0e;
 	border-color: #0e7d0e;
@@ -580,6 +591,38 @@ select:disabled {
 	border-radius: 4px;
 	cursor: pointer;
 	transition: all 0.2s;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.track-list-item-content {
+	flex: 1;
+	min-width: 0;
+}
+
+.track-delete-btn {
+	padding: 2px 8px;
+	background: transparent;
+	border: 1px solid #555;
+	border-radius: 3px;
+	color: #888;
+	cursor: pointer;
+	font-size: 16px;
+	line-height: 1;
+	transition: all 0.2s;
+	opacity: 0;
+}
+
+.track-list-item:hover .track-delete-btn {
+	opacity: 1;
+}
+
+.track-delete-btn:hover {
+	background: #c93535;
+	border-color: #c93535;
+	color: #fff;
 }
 
 .track-list-item:hover {
