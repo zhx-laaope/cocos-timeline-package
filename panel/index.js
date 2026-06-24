@@ -394,6 +394,9 @@ Editor.Panel.extend({
 		this.$el('#btnSave').addEventListener('click', () => this.onSaveTimeline());
 		this.$el('#btnSaveAs').addEventListener('click', () => this.onSaveAsTimeline());
 
+		// 快速创建按钮
+		this.$el('#btnQuickCreate').addEventListener('click', () => this.onQuickCreateTimeline());
+
 		// 播放控制
 		this.$el('#btnPlayPause').addEventListener('click', () => this.onPlayPause());
 		this.$el('#btnStop').addEventListener('click', () => this.onStop());
@@ -701,6 +704,8 @@ Editor.Panel.extend({
 
 		const root = this.$el('.timeline-editor');
 		const overlay = this.$el('#contextOverlay');
+		const quickCreateBtn = this.$el('#btnQuickCreate');
+
 		if (root) {
 			root.classList.toggle('locked', !enabled);
 		}
@@ -711,6 +716,19 @@ Editor.Panel.extend({
 			const messageEl = this.$el('#contextMessage');
 			if (titleEl && title) titleEl.textContent = title;
 			if (messageEl && detail !== undefined) messageEl.textContent = detail || '';
+
+			// 显示快速创建按钮：当有 prefab 但没有 timeline 时
+			const context = editorState.prefabContext;
+			const shouldShowQuickCreate = !enabled &&
+				context &&
+				context.inPrefab &&
+				context.prefabUrl &&
+				context.timeline &&
+				context.timeline.missing;
+
+			if (quickCreateBtn) {
+				quickCreateBtn.style.display = shouldShowQuickCreate ? 'inline-block' : 'none';
+			}
 		}
 
 		this.$$el('input, select').forEach((el) => {
@@ -1022,6 +1040,64 @@ Editor.Panel.extend({
 
 	onSaveAsTimeline() {
 		this.setStatus('Timeline 必须保存到当前 Prefab 绑定的文件，不能另存为', 'error');
+	},
+
+	onQuickCreateTimeline() {
+		const context = editorState.prefabContext;
+		if (!context || !context.inPrefab || !context.prefabUrl || !context.timeline || !context.timeline.missing) {
+			this.setStatus('无法快速创建：未找到 Prefab 或 Timeline 信息', 'error');
+			return;
+		}
+
+		const prefabName = Path.basename(context.prefabUrl, '.prefab');
+		const timelinePath = context.timeline.filePath;
+
+		if (!timelinePath) {
+			this.setStatus('无法确定 Timeline 保存路径', 'error');
+			return;
+		}
+
+		// 创建空 Timeline 数据
+		const newTimeline = {
+			name: prefabName,
+			version: '1.0.0',
+			duration: 5.0,
+			frameRate: 60,
+			loopMode: 'none',
+			autoPlay: false,
+			tracks: [],
+		};
+
+		try {
+			// 保存文件
+			const content = JSON.stringify(newTimeline, null, 2);
+			ensureDirectory(timelinePath);
+			Fs.writeFileSync(timelinePath, content, 'utf8');
+			refreshAsset(timelinePath);
+
+			// 设置当前数据
+			editorState.timelineData = newTimeline;
+			editorState.currentFile = timelinePath;
+			editorState.isDirty = false;
+
+			// 更新上下文状态
+			const updatedTimeline = {
+				url: context.timeline.url,
+				filePath: timelinePath,
+				source: 'quick-create',
+				missing: false,
+			};
+			editorState.prefabContext = Object.assign({}, context, { timeline: updatedTimeline });
+			const timelineState = 'ready';
+			editorState.contextKey = context.prefabUrl + '|' + timelineState + '|' + updatedTimeline.source + '|' + timelinePath;
+
+			// 切换到可编辑状态
+			this.setTimelineEditable(true, '正在编辑当前 Prefab 的 Timeline', context.prefabUrl);
+			this.updateUI();
+			this.setStatus('已创建并绑定: ' + prefabName + '.json', 'success');
+		} catch (err) {
+			this.setStatus('创建失败: ' + err.message, 'error');
+		}
 	},
 
 	onPlayPause() {
