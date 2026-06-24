@@ -32,6 +32,12 @@ let editorState = {
 	maxHistorySize: 50,
 	// 剪贴板
 	clipboard: null,
+	// 吸附设置
+	snapEnabled: true,
+	snapThreshold: 10, // 像素阈值
+	snapToClips: true,
+	snapToGrid: true,
+	snapGuides: [], // 吸附辅助线
 };
 
 function ensureDirectory(filePath) {
@@ -969,7 +975,14 @@ Editor.Panel.extend({
 			if (!isDragging) return;
 
 			const deltaX = e.clientX - startX;
-			const newLeft = Math.max(0, startLeft + deltaX);
+			let newLeft = Math.max(0, startLeft + deltaX);
+
+			// 吸附功能
+			if (editorState.snapEnabled) {
+				const snappedLeft = this.calculateSnap(newLeft, trackIndex, clipIndex);
+				newLeft = snappedLeft;
+			}
+
 			clipEl.style.left = newLeft + 'px';
 		};
 
@@ -979,11 +992,17 @@ Editor.Panel.extend({
 			isDragging = false;
 			clipEl.classList.remove('dragging');
 
+			// 清除吸附辅助线
+			this.clearSnapGuides();
+
 			if (!this.ensureTimelineEditable()) {
 				document.removeEventListener('mousemove', onMouseMove);
 				document.removeEventListener('mouseup', onMouseUp);
 				return;
 			}
+
+			// 保存历史记录
+			this.pushHistory();
 
 			// 更新数据
 			const newStart = parseFloat(clipEl.style.left) / editorState.pixelsPerSecond;
@@ -1539,6 +1558,96 @@ Editor.Panel.extend({
 		this.renderTimeline();
 
 		this.setStatus('已适配所有内容', 'success', 1000);
+	},
+
+	// 计算吸附位置
+	calculateSnap(position, trackIndex, clipIndex) {
+		if (!editorState.snapEnabled) return position;
+
+		const threshold = editorState.snapThreshold;
+		const pps = editorState.pixelsPerSecond;
+		const tracks = editorState.timelineData.tracks;
+		const currentClip = tracks[trackIndex].clips[clipIndex];
+		const clipWidth = (currentClip.duration || 0) * pps;
+
+		let snapTargets = [];
+
+		// 1. 吸附到网格（整秒）
+		if (editorState.snapToGrid) {
+			const timeInSeconds = position / pps;
+			const nearestSecond = Math.round(timeInSeconds);
+			const gridPosition = nearestSecond * pps;
+			snapTargets.push({ position: gridPosition, type: 'grid' });
+		}
+
+		// 2. 吸附到其他片段
+		if (editorState.snapToClips) {
+			tracks.forEach((track, tIndex) => {
+				if (!track.clips) return;
+				track.clips.forEach((clip, cIndex) => {
+					// 跳过自己
+					if (tIndex === trackIndex && cIndex === clipIndex) return;
+
+					const clipLeft = clip.start * pps;
+					const clipRight = (clip.start + (clip.duration || 0)) * pps;
+
+					// 吸附到片段的左边缘（当前片段的左边缘）
+					snapTargets.push({ position: clipLeft, type: 'clip-start' });
+					// 吸附到片段的右边缘（当前片段的左边缘）
+					snapTargets.push({ position: clipRight, type: 'clip-end' });
+					// 吸附到片段的左边缘（当前片段的右边缘）
+					snapTargets.push({ position: clipLeft - clipWidth, type: 'clip-start-right' });
+					// 吸附到片段的右边缘（当前片段的右边缘）
+					snapTargets.push({ position: clipRight - clipWidth, type: 'clip-end-right' });
+				});
+			});
+		}
+
+		// 3. 找到最近的吸附目标
+		let bestSnap = null;
+		let bestDistance = threshold;
+
+		snapTargets.forEach(target => {
+			const distance = Math.abs(position - target.position);
+			if (distance < bestDistance) {
+				bestDistance = distance;
+				bestSnap = target;
+			}
+		});
+
+		// 如果找到吸附目标
+		if (bestSnap) {
+			this.showSnapGuide(bestSnap.position + clipWidth / 2); // 在片段中心显示辅助线
+			return bestSnap.position;
+		}
+
+		this.clearSnapGuides();
+		return position;
+	},
+
+	// 显示吸附辅助线
+	showSnapGuide(position) {
+		this.clearSnapGuides();
+
+		const tracksContainer = this.$el('#tracksContainer');
+		if (!tracksContainer) return;
+
+		const guide = document.createElement('div');
+		guide.className = 'snap-guide';
+		guide.style.left = position + 'px';
+		tracksContainer.appendChild(guide);
+
+		editorState.snapGuides.push(guide);
+	},
+
+	// 清除吸附辅助线
+	clearSnapGuides() {
+		editorState.snapGuides.forEach(guide => {
+			if (guide.parentNode) {
+				guide.parentNode.removeChild(guide);
+			}
+		});
+		editorState.snapGuides = [];
 	},
 
 	onKeyDown(e) {

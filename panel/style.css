@@ -584,6 +584,31 @@ select:disabled {
 	border-top: 8px solid #ff0000;
 }
 
+/* 吸附辅助线 */
+.snap-guide {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 1px;
+	background: #00ff00;
+	pointer-events: none;
+	z-index: 19;
+	animation: snap-guide-flash 0.3s ease-out;
+}
+
+@keyframes snap-guide-flash {
+	0% {
+		opacity: 0;
+	}
+	50% {
+		opacity: 1;
+		box-shadow: 0 0 8px #00ff00;
+	}
+	100% {
+		opacity: 1;
+	}
+}
+
 /* 轨道列表 */
 .track-list {
 	display: flex;
