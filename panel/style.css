@@ -425,6 +425,29 @@ select:disabled {
 	background: #2a2a2a;
 }
 
+.track.locked {
+	opacity: 0.6;
+	pointer-events: none;
+}
+
+.track.locked .track-header {
+	pointer-events: auto;
+}
+
+.track.muted {
+	opacity: 0.5;
+}
+
+.track.muted .clip {
+	background: repeating-linear-gradient(
+		45deg,
+		#444,
+		#444 10px,
+		#333 10px,
+		#333 20px
+	);
+}
+
 .track-header {
 	width: 120px;
 	min-width: 120px;
@@ -434,6 +457,43 @@ select:disabled {
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
+}
+
+.track-info {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	cursor: pointer;
+}
+
+.track-controls {
+	display: flex;
+	gap: 4px;
+	margin-top: 4px;
+}
+
+.track-control-btn {
+	flex: 1;
+	padding: 4px;
+	background: #333;
+	border: 1px solid #555;
+	border-radius: 3px;
+	color: #888;
+	font-size: 14px;
+	cursor: pointer;
+	transition: all 0.2s;
+}
+
+.track-control-btn:hover {
+	background: #444;
+	border-color: #666;
+}
+
+.track-control-btn.active {
+	background: #007acc;
+	border-color: #007acc;
+	color: #fff;
 }
 
 .track-name {

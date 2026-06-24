@@ -885,16 +885,47 @@ Editor.Panel.extend({
 		if (editorState.selectedTrack === index) {
 			trackEl.classList.add('selected');
 		}
+		if (track.locked) {
+			trackEl.classList.add('locked');
+		}
+		if (track.muted) {
+			trackEl.classList.add('muted');
+		}
 
 		// 轨道头部
 		const header = document.createElement('div');
 		header.className = 'track-header';
 		header.innerHTML = `
-			<div class="track-name">${track.name || 'Track ' + (index + 1)}</div>
-			<div class="track-type">${track.type}</div>
-			<div class="track-target">${track.targetPath || '.'}</div>
+			<div class="track-info">
+				<div class="track-name">${track.name || 'Track ' + (index + 1)}</div>
+				<div class="track-type">${track.type}</div>
+				<div class="track-target">${track.targetPath || '.'}</div>
+			</div>
+			<div class="track-controls">
+				<button class="track-control-btn ${track.locked ? 'active' : ''}" data-action="lock" title="${track.locked ? '解锁' : '锁定'}">
+					🔒
+				</button>
+				<button class="track-control-btn ${track.muted ? 'active' : ''}" data-action="mute" title="${track.muted ? '取消静音' : '静音'}">
+					🔇
+				</button>
+			</div>
 		`;
-		header.addEventListener('click', () => this.onSelectTrack(index));
+
+		// 点击轨道信息区域选中轨道
+		header.querySelector('.track-info').addEventListener('click', () => this.onSelectTrack(index));
+
+		// 锁定/静音按钮
+		header.querySelectorAll('.track-control-btn').forEach(btn => {
+			btn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				const action = btn.getAttribute('data-action');
+				if (action === 'lock') {
+					this.toggleTrackLock(index);
+				} else if (action === 'mute') {
+					this.toggleTrackMute(index);
+				}
+			});
+		});
 
 		// 轨道内容
 		const content = document.createElement('div');
@@ -959,6 +990,13 @@ Editor.Panel.extend({
 
 		const onMouseDown = (e) => {
 			if (e.target.classList.contains('clip-handle')) return;
+
+			// 检查轨道是否锁定
+			const track = editorState.timelineData.tracks[trackIndex];
+			if (track && track.locked) {
+				this.setStatus('轨道已锁定，无法编辑', 'error', 1500);
+				return;
+			}
 
 			isDragging = true;
 			startX = e.clientX;
@@ -1258,6 +1296,14 @@ Editor.Panel.extend({
 			return;
 		}
 
+		const track = editorState.timelineData.tracks[editorState.selectedTrack];
+
+		// 检查轨道是否锁定
+		if (track && track.locked) {
+			this.setStatus('轨道已锁定，无法添加片段', 'error');
+			return;
+		}
+
 		// 保存历史记录
 		this.pushHistory();
 
@@ -1386,6 +1432,12 @@ Editor.Panel.extend({
 
 		const track = editorState.timelineData.tracks[trackIndex];
 		if (!track || !track.clips || !track.clips[clipIndex]) return;
+
+		// 检查轨道是否锁定
+		if (track.locked) {
+			this.setStatus('轨道已锁定，无法删除片段', 'error');
+			return;
+		}
 
 		const clip = track.clips[clipIndex];
 		const clipName = clip.name || 'Clip ' + (clipIndex + 1);
@@ -1648,6 +1700,44 @@ Editor.Panel.extend({
 			}
 		});
 		editorState.snapGuides = [];
+	},
+
+	// 切换轨道锁定状态
+	toggleTrackLock(trackIndex) {
+		if (!this.ensureTimelineEditable()) return;
+
+		const track = editorState.timelineData.tracks[trackIndex];
+		if (!track) return;
+
+		// 保存历史记录
+		this.pushHistory();
+
+		track.locked = !track.locked;
+
+		this.markDirty();
+		this.renderTimeline();
+
+		const status = track.locked ? '已锁定' : '已解锁';
+		this.setStatus(`轨道 "${track.name || 'Track ' + (trackIndex + 1)}" ${status}`, 'success', 1000);
+	},
+
+	// 切换轨道静音状态
+	toggleTrackMute(trackIndex) {
+		if (!this.ensureTimelineEditable()) return;
+
+		const track = editorState.timelineData.tracks[trackIndex];
+		if (!track) return;
+
+		// 保存历史记录
+		this.pushHistory();
+
+		track.muted = !track.muted;
+
+		this.markDirty();
+		this.renderTimeline();
+
+		const status = track.muted ? '已静音' : '已取消静音';
+		this.setStatus(`轨道 "${track.name || 'Track ' + (trackIndex + 1)}" ${status}`, 'success', 1000);
 	},
 
 	onKeyDown(e) {
