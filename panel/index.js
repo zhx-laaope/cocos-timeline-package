@@ -1889,9 +1889,17 @@ Editor.Panel.extend({
 	},
 
 	onKeyDown(e) {
-		// 如果焦点在输入框，不处理删除快捷键
-		if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
-			return;
+		// 如果焦点在输入框，只允许部分快捷键
+		const isInInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
+
+		if (isInInput) {
+			// 输入框中只允许撤销/重做快捷键，其他全部忽略
+			if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+				// 允许撤销/重做
+			} else {
+				// 其他快捷键都不处理，让输入框正常工作
+				return;
+			}
 		}
 
 		if (!editorState.isTimelineEditable) return;
