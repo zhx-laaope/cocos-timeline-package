@@ -30,6 +30,8 @@ let editorState = {
 	history: [],
 	historyIndex: -1,
 	maxHistorySize: 50,
+	// 剪贴板
+	clipboard: null,
 };
 
 function ensureDirectory(filePath) {
@@ -1376,6 +1378,74 @@ Editor.Panel.extend({
 		this.setStatus('已删除片段: ' + clipName, 'success');
 	},
 
+	copyClip() {
+		if (!this.ensureTimelineEditable()) return;
+
+		// 必须选中片段才能复制
+		if (editorState.selectedTrack === null || editorState.selectedClip === null) {
+			this.setStatus('请先选择要复制的片段', 'error');
+			return;
+		}
+
+		const track = editorState.timelineData.tracks[editorState.selectedTrack];
+		if (!track || !track.clips || !track.clips[editorState.selectedClip]) {
+			this.setStatus('选中的片段无效', 'error');
+			return;
+		}
+
+		const clip = track.clips[editorState.selectedClip];
+
+		// 深拷贝到剪贴板
+		editorState.clipboard = JSON.parse(JSON.stringify(clip));
+
+		this.setStatus('已复制片段: ' + (clip.name || 'Clip'), 'success', 1000);
+	},
+
+	pasteClip() {
+		if (!this.ensureTimelineEditable()) return;
+
+		// 检查剪贴板是否有内容
+		if (!editorState.clipboard) {
+			this.setStatus('剪贴板为空，请先复制片段', 'error');
+			return;
+		}
+
+		// 必须选中轨道才能粘贴
+		if (editorState.selectedTrack === null) {
+			this.setStatus('请先选择要粘贴到的轨道', 'error');
+			return;
+		}
+
+		const track = editorState.timelineData.tracks[editorState.selectedTrack];
+		if (!track) {
+			this.setStatus('选中的轨道无效', 'error');
+			return;
+		}
+
+		// 保存历史记录
+		this.pushHistory();
+
+		// 深拷贝剪贴板内容
+		const newClip = JSON.parse(JSON.stringify(editorState.clipboard));
+
+		// 生成新的 ID
+		newClip.id = 'clip_' + Date.now();
+
+		// 粘贴到当前播放头位置
+		newClip.start = editorState.currentTime;
+
+		// 添加到轨道
+		track.clips.push(newClip);
+
+		// 选中新片段
+		editorState.selectedClip = track.clips.length - 1;
+
+		this.markDirty();
+		this.renderTimeline();
+		this.updateClipProperties();
+		this.setStatus('已粘贴片段: ' + (newClip.name || 'Clip'), 'success', 1000);
+	},
+
 	onKeyDown(e) {
 		// 如果焦点在输入框，不处理删除快捷键
 		if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
@@ -1383,6 +1453,20 @@ Editor.Panel.extend({
 		}
 
 		if (!editorState.isTimelineEditable) return;
+
+		// Ctrl+C 复制
+		if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+			e.preventDefault();
+			this.copyClip();
+			return;
+		}
+
+		// Ctrl+V 粘贴
+		if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+			e.preventDefault();
+			this.pasteClip();
+			return;
+		}
 
 		// Ctrl+Z 撤销
 		if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
@@ -1446,10 +1530,16 @@ Editor.Panel.extend({
 				<label>持续时间（秒）</label>
 				<input type="number" value="${clip.duration || 0}" step="0.1" data-prop="duration">
 			</div>
-			<div class="property-group">
-				<button id="btnDeleteClip" class="btn btn-danger" style="width: 100%;">删除片段</button>
+			<div class="property-group" style="display: flex; gap: 8px;">
+				<button id="btnCopyClip" class="btn" style="flex: 1;">复制</button>
+				<button id="btnDeleteClip" class="btn btn-danger" style="flex: 1;">删除</button>
 			</div>
 		`;
+
+		// 绑定复制按钮
+		panel.querySelector('#btnCopyClip').addEventListener('click', () => {
+			this.copyClip();
+		});
 
 		// 绑定删除按钮
 		panel.querySelector('#btnDeleteClip').addEventListener('click', () => {
