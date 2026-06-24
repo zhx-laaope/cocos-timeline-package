@@ -32,6 +32,8 @@ let editorState = {
 	maxHistorySize: 50,
 	// 剪贴板
 	clipboard: null,
+	// 多选
+	selectedClips: [], // [{trackIndex, clipIndex}]
 	// 吸附设置
 	snapEnabled: true,
 	snapThreshold: 10, // 像素阈值
@@ -959,7 +961,12 @@ Editor.Panel.extend({
 		clipEl.style.left = left + 'px';
 		clipEl.style.width = width + 'px';
 
-		if (editorState.selectedTrack === trackIndex && editorState.selectedClip === clipIndex) {
+		// 检查是否在多选列表中
+		const isInMultiSelect = editorState.selectedClips.some(
+			s => s.trackIndex === trackIndex && s.clipIndex === clipIndex
+		);
+
+		if (isInMultiSelect) {
 			clipEl.classList.add('selected');
 		}
 
@@ -973,7 +980,7 @@ Editor.Panel.extend({
 		// 点击选中
 		clipEl.addEventListener('click', (e) => {
 			e.stopPropagation();
-			this.onSelectClip(trackIndex, clipIndex);
+			this.onSelectClip(trackIndex, clipIndex, e.ctrlKey || e.metaKey);
 		});
 
 		// 拖拽移动
@@ -1362,11 +1369,40 @@ Editor.Panel.extend({
 		this.updateClipProperties();
 	},
 
-	onSelectClip(trackIndex, clipIndex) {
+	onSelectClip(trackIndex, clipIndex, multiSelect = false) {
 		if (!this.ensureTimelineEditable()) return;
 
-		editorState.selectedTrack = trackIndex;
-		editorState.selectedClip = clipIndex;
+		if (multiSelect) {
+			// 多选模式
+			const index = editorState.selectedClips.findIndex(
+				s => s.trackIndex === trackIndex && s.clipIndex === clipIndex
+			);
+
+			if (index >= 0) {
+				// 已选中，取消选中
+				editorState.selectedClips.splice(index, 1);
+			} else {
+				// 未选中，添加到选中列表
+				editorState.selectedClips.push({ trackIndex, clipIndex });
+			}
+
+			// 如果多选列表为空，清除选中
+			if (editorState.selectedClips.length === 0) {
+				editorState.selectedTrack = null;
+				editorState.selectedClip = null;
+			} else {
+				// 主选中项设为最后一个
+				const last = editorState.selectedClips[editorState.selectedClips.length - 1];
+				editorState.selectedTrack = last.trackIndex;
+				editorState.selectedClip = last.clipIndex;
+			}
+		} else {
+			// 单选模式，清空多选
+			editorState.selectedClips = [{ trackIndex, clipIndex }];
+			editorState.selectedTrack = trackIndex;
+			editorState.selectedClip = clipIndex;
+		}
+
 		this.renderTimeline();
 		this.updateClipProperties();
 	},
@@ -1463,24 +1499,34 @@ Editor.Panel.extend({
 	copyClip() {
 		if (!this.ensureTimelineEditable()) return;
 
-		// 必须选中片段才能复制
-		if (editorState.selectedTrack === null || editorState.selectedClip === null) {
+		// 检查是否有多选
+		if (editorState.selectedClips.length === 0) {
 			this.setStatus('请先选择要复制的片段', 'error');
 			return;
 		}
 
-		const track = editorState.timelineData.tracks[editorState.selectedTrack];
-		if (!track || !track.clips || !track.clips[editorState.selectedClip]) {
+		// 批量复制
+		const clipsToCopy = [];
+		editorState.selectedClips.forEach(({ trackIndex, clipIndex }) => {
+			const track = editorState.timelineData.tracks[trackIndex];
+			if (track && track.clips && track.clips[clipIndex]) {
+				clipsToCopy.push({
+					trackIndex,
+					clip: JSON.parse(JSON.stringify(track.clips[clipIndex]))
+				});
+			}
+		});
+
+		if (clipsToCopy.length === 0) {
 			this.setStatus('选中的片段无效', 'error');
 			return;
 		}
 
-		const clip = track.clips[editorState.selectedClip];
-
 		// 深拷贝到剪贴板
-		editorState.clipboard = JSON.parse(JSON.stringify(clip));
+		editorState.clipboard = clipsToCopy;
 
-		this.setStatus('已复制片段: ' + (clip.name || 'Clip'), 'success', 1000);
+		const count = clipsToCopy.length;
+		this.setStatus(`已复制 ${count} 个片段`, 'success', 1000);
 	},
 
 	pasteClip() {
@@ -1507,22 +1553,39 @@ Editor.Panel.extend({
 		// 保存历史记录
 		this.pushHistory();
 
-		// 深拷贝剪贴板内容
-		const newClip = JSON.parse(JSON.stringify(editorState.clipboard));
+		// 检查剪贴板是数组还是单个片段（兼容旧版）
+		const clipsToPaste = Array.isArray(editorState.clipboard)
+			? editorState.clipboard
+			: [{ trackIndex: editorState.selectedTrack, clip: editorState.clipboard }];
 
-		// 生成新的 ID
-		newClip.id = 'clip_' + Date.now();
+		const newClips = [];
+		clipsToPaste.forEach(({ clip }, index) => {
+			// 深拷贝剪贴板内容
+			const newClip = JSON.parse(JSON.stringify(clip));
 
-		// 粘贴到当前播放头位置
-		newClip.start = editorState.currentTime;
+			// 生成新的 ID
+			newClip.id = 'clip_' + Date.now() + '_' + index;
 
-		// 添加到轨道
-		track.clips.push(newClip);
+			// 粘贴到当前播放头位置
+			newClip.start = editorState.currentTime;
 
-		// 选中新片段
-		editorState.selectedClip = track.clips.length - 1;
+			// 添加到轨道
+			track.clips.push(newClip);
+			newClips.push({ trackIndex: editorState.selectedTrack, clipIndex: track.clips.length - 1 });
+		});
+
+		// 选中新粘贴的片段
+		editorState.selectedClips = newClips;
+		if (newClips.length > 0) {
+			const last = newClips[newClips.length - 1];
+			editorState.selectedClip = last.clipIndex;
+		}
 
 		this.markDirty();
+		this.renderTimeline();
+		this.updateClipProperties();
+		this.setStatus(`已粘贴 ${newClips.length} 个片段`, 'success', 1000);
+	},
 		this.renderTimeline();
 		this.updateClipProperties();
 		this.setStatus('已粘贴片段: ' + (newClip.name || 'Clip'), 'success', 1000);
@@ -1740,6 +1803,96 @@ Editor.Panel.extend({
 		this.setStatus(`轨道 "${track.name || 'Track ' + (trackIndex + 1)}" ${status}`, 'success', 1000);
 	},
 
+	// 批量删除选中的片段
+	deleteSelectedClips() {
+		if (!this.ensureTimelineEditable()) return;
+
+		if (editorState.selectedClips.length === 0) {
+			this.setStatus('没有选中的片段', 'error');
+			return;
+		}
+
+		// 检查是否有锁定的轨道
+		const hasLockedTrack = editorState.selectedClips.some(({ trackIndex }) => {
+			const track = editorState.timelineData.tracks[trackIndex];
+			return track && track.locked;
+		});
+
+		if (hasLockedTrack) {
+			this.setStatus('部分轨道已锁定，无法删除', 'error');
+			return;
+		}
+
+		const count = editorState.selectedClips.length;
+		if (!confirm(`确定要删除选中的 ${count} 个片段吗？`)) {
+			return;
+		}
+
+		// 保存历史记录
+		this.pushHistory();
+
+		// 按轨道分组，从后向前删除（避免索引变化）
+		const clipsByTrack = {};
+		editorState.selectedClips.forEach(({ trackIndex, clipIndex }) => {
+			if (!clipsByTrack[trackIndex]) {
+				clipsByTrack[trackIndex] = [];
+			}
+			clipsByTrack[trackIndex].push(clipIndex);
+		});
+
+		// 对每个轨道的片段索引排序（降序）
+		Object.keys(clipsByTrack).forEach(trackIndex => {
+			clipsByTrack[trackIndex].sort((a, b) => b - a);
+		});
+
+		// 删除片段
+		Object.keys(clipsByTrack).forEach(trackIndex => {
+			const track = editorState.timelineData.tracks[trackIndex];
+			if (!track || !track.clips) return;
+
+			clipsByTrack[trackIndex].forEach(clipIndex => {
+				track.clips.splice(clipIndex, 1);
+			});
+		});
+
+		// 清除选中状态
+		editorState.selectedClips = [];
+		editorState.selectedTrack = null;
+		editorState.selectedClip = null;
+
+		this.markDirty();
+		this.renderTimeline();
+		this.updateClipProperties();
+		this.setStatus(`已删除 ${count} 个片段`, 'success');
+	},
+
+	// 全选所有片段
+	selectAllClips() {
+		if (!editorState.timelineData || !editorState.timelineData.tracks) return;
+
+		editorState.selectedClips = [];
+
+		editorState.timelineData.tracks.forEach((track, trackIndex) => {
+			if (track.clips && track.clips.length > 0) {
+				track.clips.forEach((clip, clipIndex) => {
+					editorState.selectedClips.push({ trackIndex, clipIndex });
+				});
+			}
+		});
+
+		if (editorState.selectedClips.length > 0) {
+			const last = editorState.selectedClips[editorState.selectedClips.length - 1];
+			editorState.selectedTrack = last.trackIndex;
+			editorState.selectedClip = last.clipIndex;
+
+			this.renderTimeline();
+			this.updateClipProperties();
+			this.setStatus(`已选中 ${editorState.selectedClips.length} 个片段`, 'success', 1000);
+		} else {
+			this.setStatus('没有可选中的片段', 'info', 1000);
+		}
+	},
+
 	onKeyDown(e) {
 		// 如果焦点在输入框，不处理删除快捷键
 		if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
@@ -1759,6 +1912,13 @@ Editor.Panel.extend({
 		if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
 			e.preventDefault();
 			this.pasteClip();
+			return;
+		}
+
+		// Ctrl+A 全选
+		if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+			e.preventDefault();
+			this.selectAllClips();
 			return;
 		}
 
@@ -1787,9 +1947,9 @@ Editor.Panel.extend({
 		if (e.key === 'Delete' || e.key === 'Backspace') {
 			e.preventDefault();
 
-			// 删除选中的片段
-			if (editorState.selectedTrack !== null && editorState.selectedClip !== null) {
-				this.onDeleteClip(editorState.selectedTrack, editorState.selectedClip);
+			// 批量删除选中的片段
+			if (editorState.selectedClips.length > 0) {
+				this.deleteSelectedClips();
 			}
 			// 删除选中的轨道（如果没有选中片段）
 			else if (editorState.selectedTrack !== null) {
@@ -1801,6 +1961,31 @@ Editor.Panel.extend({
 	// 更新片段属性面板
 	updateClipProperties() {
 		const panel = this.$el('#clipProperties');
+
+		// 多选状态
+		if (editorState.selectedClips.length > 1) {
+			panel.innerHTML = `
+				<div class="property-group">
+					<label>已选中 ${editorState.selectedClips.length} 个片段</label>
+				</div>
+				<div class="property-group" style="display: flex; gap: 8px;">
+					<button id="btnCopyClips" class="btn" style="flex: 1;">复制</button>
+					<button id="btnDeleteClips" class="btn btn-danger" style="flex: 1;">删除</button>
+				</div>
+			`;
+
+			// 绑定批量复制按钮
+			panel.querySelector('#btnCopyClips').addEventListener('click', () => {
+				this.copyClip();
+			});
+
+			// 绑定批量删除按钮
+			panel.querySelector('#btnDeleteClips').addEventListener('click', () => {
+				this.deleteSelectedClips();
+			});
+
+			return;
+		}
 
 		if (editorState.selectedTrack === null || editorState.selectedClip === null) {
 			panel.innerHTML = '<div class="empty-state">未选中片段</div>';
