@@ -1585,10 +1585,6 @@ Editor.Panel.extend({
 		this.updateClipProperties();
 		this.setStatus(`已粘贴 ${newClips.length} 个片段`, 'success', 1000);
 	},
-		this.renderTimeline();
-		this.updateClipProperties();
-		this.setStatus('已粘贴片段: ' + (newClip.name || 'Clip'), 'success', 1000);
-	},
 
 	onTimelineWheel(e) {
 		if (!editorState.timelineData) return;
