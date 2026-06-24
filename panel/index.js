@@ -26,6 +26,10 @@ let editorState = {
 	pixelsPerSecond: 100, // 每秒对应的像素数
 	isDirty: false,
 	statusTimer: null,
+	// 历史记录
+	history: [],
+	historyIndex: -1,
+	maxHistorySize: 50,
 };
 
 function ensureDirectory(filePath) {
@@ -397,6 +401,10 @@ Editor.Panel.extend({
 		// 快速创建按钮
 		this.$el('#btnQuickCreate').addEventListener('click', () => this.onQuickCreateTimeline());
 
+		// 撤销/重做按钮
+		this.$el('#btnUndo').addEventListener('click', () => this.undo());
+		this.$el('#btnRedo').addEventListener('click', () => this.redo());
+
 		// 播放控制
 		this.$el('#btnPlayPause').addEventListener('click', () => this.onPlayPause());
 		this.$el('#btnStop').addEventListener('click', () => this.onStop());
@@ -658,6 +666,9 @@ Editor.Panel.extend({
 			autoPlay: false,
 			tracks: [],
 		};
+
+		// 清空历史记录
+		this.clearHistory();
 
 		this.updateUI();
 	},
@@ -1090,6 +1101,10 @@ Editor.Panel.extend({
 			editorState.currentFile = timelinePath;
 			editorState.isDirty = false;
 
+			// 初始化历史记录
+			this.clearHistory();
+			this.pushHistory();
+
 			// 更新上下文状态
 			const updatedTimeline = {
 				url: context.timeline.url,
@@ -1181,6 +1196,9 @@ Editor.Panel.extend({
 		const name = this.$el('#newTrackName').value || 'New Track';
 		const targetPath = this.$el('#newTrackTarget').value || '.';
 
+		// 保存历史记录
+		this.pushHistory();
+
 		const track = {
 			id: 'track_' + Date.now(),
 			name: name,
@@ -1207,6 +1225,9 @@ Editor.Panel.extend({
 			this.setStatus('请先选择一个轨道', 'error');
 			return;
 		}
+
+		// 保存历史记录
+		this.pushHistory();
 
 		const track = editorState.timelineData.tracks[editorState.selectedTrack];
 		const clip = {
@@ -1309,6 +1330,9 @@ Editor.Panel.extend({
 			return;
 		}
 
+		// 保存历史记录
+		this.pushHistory();
+
 		editorState.timelineData.tracks.splice(trackIndex, 1);
 
 		// 清除选中状态
@@ -1338,6 +1362,9 @@ Editor.Panel.extend({
 			return;
 		}
 
+		// 保存历史记录
+		this.pushHistory();
+
 		track.clips.splice(clipIndex, 1);
 
 		// 清除选中状态
@@ -1356,6 +1383,20 @@ Editor.Panel.extend({
 		}
 
 		if (!editorState.isTimelineEditable) return;
+
+		// Ctrl+Z 撤销
+		if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+			e.preventDefault();
+			this.undo();
+			return;
+		}
+
+		// Ctrl+Y 或 Ctrl+Shift+Z 重做
+		if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+			e.preventDefault();
+			this.redo();
+			return;
+		}
 
 		// Delete 或 Backspace 键删除
 		if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -1481,6 +1522,10 @@ Editor.Panel.extend({
 			editorState.isDirty = false;
 			this.setPlayButtonIcon(false);
 
+			// 初始化历史记录
+			this.clearHistory();
+			this.pushHistory();
+
 			this.updateUI();
 			if (!options.silent) {
 				this.setStatus('已加载: ' + Path.basename(filePath), 'success');
@@ -1524,6 +1569,89 @@ Editor.Panel.extend({
 	// 工具方法
 	markDirty() {
 		editorState.isDirty = true;
+	},
+
+	// 历史记录管理
+	pushHistory() {
+		if (!editorState.timelineData) return;
+
+		// 深拷贝当前状态
+		const snapshot = JSON.parse(JSON.stringify(editorState.timelineData));
+
+		// 如果当前不在历史记录末尾，删除后面的记录
+		if (editorState.historyIndex < editorState.history.length - 1) {
+			editorState.history.splice(editorState.historyIndex + 1);
+		}
+
+		// 添加新快照
+		editorState.history.push(snapshot);
+
+		// 限制历史记录大小
+		if (editorState.history.length > editorState.maxHistorySize) {
+			editorState.history.shift();
+		} else {
+			editorState.historyIndex++;
+		}
+
+		this.updateUndoRedoButtons();
+	},
+
+	undo() {
+		if (!this.canUndo()) return;
+
+		editorState.historyIndex--;
+		this.restoreFromHistory();
+		this.setStatus('已撤销', 'info', 1000);
+	},
+
+	redo() {
+		if (!this.canRedo()) return;
+
+		editorState.historyIndex++;
+		this.restoreFromHistory();
+		this.setStatus('已重做', 'info', 1000);
+	},
+
+	canUndo() {
+		return editorState.historyIndex > 0;
+	},
+
+	canRedo() {
+		return editorState.historyIndex < editorState.history.length - 1;
+	},
+
+	restoreFromHistory() {
+		if (editorState.historyIndex < 0 || editorState.historyIndex >= editorState.history.length) {
+			return;
+		}
+
+		// 恢复快照（深拷贝）
+		editorState.timelineData = JSON.parse(JSON.stringify(editorState.history[editorState.historyIndex]));
+		editorState.isDirty = true;
+
+		// 更新界面
+		this.renderTimeline();
+		this.updateUI();
+		this.updateClipProperties();
+		this.updateUndoRedoButtons();
+	},
+
+	updateUndoRedoButtons() {
+		const btnUndo = this.$el('#btnUndo');
+		const btnRedo = this.$el('#btnRedo');
+
+		if (btnUndo) {
+			btnUndo.disabled = !this.canUndo();
+		}
+		if (btnRedo) {
+			btnRedo.disabled = !this.canRedo();
+		}
+	},
+
+	clearHistory() {
+		editorState.history = [];
+		editorState.historyIndex = -1;
+		this.updateUndoRedoButtons();
 	},
 
 	setStatus(message, type = 'info', duration = 3000) {

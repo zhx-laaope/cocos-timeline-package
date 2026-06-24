@@ -46,6 +46,13 @@ body {
 	justify-content: center;
 }
 
+.toolbar-separator {
+	width: 1px;
+	height: 20px;
+	background: #555;
+	margin: 0 4px;
+}
+
 .file-info {
 	display: flex;
 	flex-direction: column;
