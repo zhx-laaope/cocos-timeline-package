@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8">
+	<title>UI Timeline Editor</title>
+	<link rel="stylesheet" href="style.css">
+</head>
+<body>
+	<div class="timeline-editor">
+		<!-- 顶部工具栏 -->
+		<div class="toolbar">
+			<div class="toolbar-left">
+				<button id="btnNew" class="btn btn-primary" title="新建 Timeline">
+					<span class="icon">+</span> 新建
+				</button>
+				<button id="btnOpen" class="btn" title="打开 Timeline">
+					<span class="icon">📂</span> 打开
+				</button>
+				<button id="btnSave" class="btn btn-success" title="保存">
+					<span class="icon">💾</span> 保存
+				</button>
+				<button id="btnSaveAs" class="btn" title="另存为">另存为</button>
+			</div>
+
+			<div class="toolbar-center">
+				<div class="file-info">
+					<span id="fileName">未打开文件</span>
+					<span id="filePath" class="file-path"></span>
+				</div>
+			</div>
+
+			<div class="toolbar-right">
+				<button id="btnHelp" class="btn" title="帮助">
+					<span class="icon">?</span>
+				</button>
+			</div>
+		</div>
+
+		<!-- 主内容区 -->
+		<div class="main-content">
+			<!-- 左侧面板 - 属性编辑 -->
+			<div class="left-panel">
+				<div class="panel-header">
+					<h3>Timeline 属性</h3>
+				</div>
+				<div class="panel-content">
+					<div class="property-group">
+						<label>名称</label>
+						<input type="text" id="timelineName" placeholder="timeline_name">
+					</div>
+					<div class="property-group">
+						<label>总时长（秒）</label>
+						<input type="number" id="timelineDuration" value="5.0" step="0.1" min="0">
+					</div>
+					<div class="property-group">
+						<label>帧率</label>
+						<input type="number" id="timelineFrameRate" value="60" step="1" min="1">
+					</div>
+					<div class="property-group">
+						<label>循环模式</label>
+						<select id="timelineLoopMode">
+							<option value="none">不循环</option>
+							<option value="loop">循环</option>
+							<option value="pingpong">来回播放</option>
+						</select>
+					</div>
+					<div class="property-group">
+						<label>
+							<input type="checkbox" id="timelineAutoPlay">
+							自动播放
+						</label>
+					</div>
+				</div>
+
+				<div class="panel-header">
+					<h3>选中片段属性</h3>
+				</div>
+				<div class="panel-content" id="clipProperties">
+					<div class="empty-state">未选中片段</div>
+				</div>
+			</div>
+
+			<!-- 中间区域 - 时间轴 -->
+			<div class="center-panel">
+				<!-- 播放控制栏 -->
+				<div class="playback-controls">
+					<button id="btnPlayPause" class="btn-icon" title="播放/暂停">
+						<span class="icon">▶</span>
+					</button>
+					<button id="btnStop" class="btn-icon" title="停止">
+						<span class="icon">■</span>
+					</button>
+					<button id="btnToStart" class="btn-icon" title="跳到开始">
+						<span class="icon">⏮</span>
+					</button>
+					<button id="btnToEnd" class="btn-icon" title="跳到结束">
+						<span class="icon">⏭</span>
+					</button>
+
+					<div class="time-display">
+						<span id="currentTime">0.00</span> / <span id="totalTime">5.00</span>s
+					</div>
+
+					<div class="zoom-controls">
+						<button id="btnZoomOut" class="btn-icon" title="缩小">-</button>
+						<span id="zoomLevel">100%</span>
+						<button id="btnZoomIn" class="btn-icon" title="放大">+</button>
+					</div>
+				</div>
+
+				<!-- 时间轴主体 -->
+				<div class="timeline-container">
+					<!-- 时间刻度尺 -->
+					<div class="timeline-ruler-container">
+						<div class="timeline-ruler-spacer"></div>
+						<div class="timeline-ruler" id="timelineRuler">
+							<!-- 时间刻度由 JS 生成 -->
+						</div>
+					</div>
+
+					<!-- 轨道列表 -->
+					<div class="timeline-tracks-container" id="tracksContainer">
+						<!-- 轨道由 JS 生成 -->
+						<div class="empty-timeline">
+							<p>暂无轨道</p>
+							<button id="btnAddTrackEmpty" class="btn btn-primary">添加轨道</button>
+						</div>
+					</div>
+
+					<!-- 播放头 -->
+					<div class="playhead" id="playhead"></div>
+				</div>
+			</div>
+
+			<!-- 右侧面板 - 轨道列表 -->
+			<div class="right-panel">
+				<div class="panel-header">
+					<h3>轨道列表</h3>
+					<button id="btnAddTrack" class="btn-icon" title="添加轨道">+</button>
+				</div>
+				<div class="panel-content">
+					<div id="trackList" class="track-list">
+						<!-- 轨道列表由 JS 生成 -->
+					</div>
+				</div>
+
+				<div class="panel-header">
+					<h3>添加片段</h3>
+				</div>
+				<div class="panel-content">
+					<div class="clip-types">
+						<button class="clip-type-btn" data-type="animation">
+							<span class="icon">🎬</span>
+							<span>Animation</span>
+						</button>
+						<button class="clip-type-btn" data-type="spine">
+							<span class="icon">🦴</span>
+							<span>Spine</span>
+						</button>
+						<button class="clip-type-btn" data-type="tween">
+							<span class="icon">📈</span>
+							<span>Tween</span>
+						</button>
+						<button class="clip-type-btn" data-type="code">
+							<span class="icon">💻</span>
+							<span>Code</span>
+						</button>
+						<button class="clip-type-btn" data-type="audio">
+							<span class="icon">🔊</span>
+							<span>Audio</span>
+						</button>
+						<button class="clip-type-btn" data-type="active">
+							<span class="icon">👁</span>
+							<span>Active</span>
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div id="contextOverlay" class="context-overlay">
+			<div class="context-overlay-content">
+				<div id="contextTitle" class="context-title">请打开 Prefab 后编辑 Timeline</div>
+				<div id="contextMessage" class="context-message">Timeline 会自动绑定到当前 Prefab</div>
+			</div>
+		</div>
+
+		<!-- 状态栏 -->
+		<div class="statusbar">
+			<span id="statusText">就绪</span>
+		</div>
+	</div>
+
+	<!-- 对话框 - 新建 Timeline -->
+	<div id="dialogNew" class="dialog-overlay" style="display: none;">
+		<div class="dialog">
+			<div class="dialog-header">
+				<h3>新建 Timeline</h3>
+				<button class="dialog-close" data-dialog="dialogNew">×</button>
+			</div>
+			<div class="dialog-body">
+				<div class="form-group">
+					<label>Timeline 名称</label>
+					<input type="text" id="newTimelineName" placeholder="my_timeline">
+				</div>
+				<div class="form-group">
+					<label>保存路径</label>
+					<input type="text" id="newTimelinePath" placeholder="Timeline/configs/" readonly>
+					<button id="btnBrowsePath" class="btn">浏览...</button>
+				</div>
+			</div>
+			<div class="dialog-footer">
+				<button class="btn" data-dialog="dialogNew">取消</button>
+				<button id="btnConfirmNew" class="btn btn-primary">创建</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- 对话框 - 添加轨道 -->
+	<div id="dialogAddTrack" class="dialog-overlay" style="display: none;">
+		<div class="dialog">
+			<div class="dialog-header">
+				<h3>添加轨道</h3>
+				<button class="dialog-close" data-dialog="dialogAddTrack">×</button>
+			</div>
+			<div class="dialog-body">
+				<div class="form-group">
+					<label>轨道类型</label>
+					<select id="newTrackType">
+						<option value="animation">Animation</option>
+						<option value="spine">Spine</option>
+						<option value="tween">Tween</option>
+						<option value="code">Code</option>
+						<option value="audio">Audio</option>
+						<option value="active">Active</option>
+					</select>
+				</div>
+				<div class="form-group">
+					<label>轨道名称</label>
+					<input type="text" id="newTrackName" placeholder="track_name">
+				</div>
+				<div class="form-group">
+					<label>目标节点路径</label>
+					<input type="text" id="newTrackTarget" placeholder=".">
+					<small>相对于 Timeline 根节点的路径，如：child_node 或 .</small>
+				</div>
+			</div>
+			<div class="dialog-footer">
+				<button class="btn" data-dialog="dialogAddTrack">取消</button>
+				<button id="btnConfirmAddTrack" class="btn btn-primary">添加</button>
+			</div>
+		</div>
+	</div>
+
+	<script src="index.js"></script>
+</body>
+</html>

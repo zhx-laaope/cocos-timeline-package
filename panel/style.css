@@ -1,0 +1,772 @@
+/* 全局样式 */
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	font-size: 13px;
+	color: #ccc;
+	background: #1e1e1e;
+	overflow: hidden;
+}
+
+/* 主容器 */
+.timeline-editor {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+	width: 100vw;
+	position: relative;
+}
+
+/* 工具栏 */
+.toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 8px 12px;
+	background: #2d2d2d;
+	border-bottom: 1px solid #3e3e3e;
+	height: 48px;
+}
+
+.toolbar-left,
+.toolbar-center,
+.toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.toolbar-center {
+	flex: 1;
+	justify-content: center;
+}
+
+.file-info {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 2px;
+}
+
+#fileName {
+	font-weight: 600;
+	color: #fff;
+}
+
+.file-path {
+	font-size: 11px;
+	color: #888;
+}
+
+/* 按钮 */
+.btn {
+	padding: 6px 12px;
+	border: 1px solid #555;
+	background: #3e3e3e;
+	color: #ccc;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 12px;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	transition: all 0.2s;
+}
+
+.btn:hover {
+	background: #4e4e4e;
+	border-color: #666;
+}
+
+.btn:active {
+	background: #2e2e2e;
+}
+
+.btn-primary {
+	background: #0e639c;
+	border-color: #0e639c;
+	color: #fff;
+}
+
+.btn-primary:hover {
+	background: #1177bb;
+	border-color: #1177bb;
+}
+
+.btn-success {
+	background: #0e7d0e;
+	border-color: #0e7d0e;
+	color: #fff;
+}
+
+.btn-success:hover {
+	background: #0f9b0f;
+	border-color: #0f9b0f;
+}
+
+.btn-icon {
+	padding: 6px 8px;
+	border: 1px solid #555;
+	background: #3e3e3e;
+	color: #ccc;
+	border-radius: 4px;
+	cursor: pointer;
+	font-size: 14px;
+	transition: all 0.2s;
+}
+
+.btn-icon:hover {
+	background: #4e4e4e;
+	border-color: #666;
+}
+
+.btn:disabled,
+.btn-icon:disabled,
+.clip-type-btn:disabled,
+input:disabled,
+select:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.btn:disabled:hover,
+.btn-icon:disabled:hover,
+.clip-type-btn:disabled:hover {
+	background: #3e3e3e;
+	border-color: #555;
+}
+
+.icon {
+	font-size: 14px;
+}
+
+/* 主内容区 */
+.main-content {
+	display: flex;
+	flex: 1;
+	overflow: hidden;
+}
+
+.timeline-editor.locked .main-content {
+	filter: grayscale(0.35);
+	opacity: 0.45;
+	pointer-events: none;
+}
+
+.context-overlay {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 48px;
+	bottom: 26px;
+	z-index: 500;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(30, 30, 30, 0.72);
+	pointer-events: auto;
+}
+
+.context-overlay.hidden {
+	display: none;
+}
+
+.context-overlay-content {
+	max-width: 520px;
+	padding: 24px 28px;
+	border: 1px solid #555;
+	border-radius: 6px;
+	background: #252526;
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+	text-align: center;
+}
+
+.context-title {
+	font-size: 16px;
+	font-weight: 600;
+	color: #fff;
+	margin-bottom: 8px;
+}
+
+.context-message {
+	font-size: 12px;
+	color: #aaa;
+	word-break: break-all;
+	line-height: 1.5;
+}
+
+/* 左侧面板 */
+.left-panel {
+	width: 280px;
+	background: #252526;
+	border-right: 1px solid #3e3e3e;
+	display: flex;
+	flex-direction: column;
+	overflow-y: auto;
+}
+
+/* 中间面板 */
+.center-panel {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	background: #1e1e1e;
+	overflow: hidden;
+}
+
+/* 右侧面板 */
+.right-panel {
+	width: 260px;
+	background: #252526;
+	border-left: 1px solid #3e3e3e;
+	display: flex;
+	flex-direction: column;
+	overflow-y: auto;
+}
+
+/* 面板头部 */
+.panel-header {
+	padding: 12px;
+	background: #2d2d2d;
+	border-bottom: 1px solid #3e3e3e;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.panel-header h3 {
+	font-size: 13px;
+	font-weight: 600;
+	color: #fff;
+}
+
+/* 面板内容 */
+.panel-content {
+	padding: 12px;
+}
+
+/* 属性组 */
+.property-group {
+	margin-bottom: 16px;
+}
+
+.property-group label {
+	display: block;
+	margin-bottom: 6px;
+	color: #ccc;
+	font-size: 12px;
+}
+
+.property-group input[type="text"],
+.property-group input[type="number"],
+.property-group select {
+	width: 100%;
+	padding: 6px 8px;
+	background: #3c3c3c;
+	border: 1px solid #555;
+	border-radius: 3px;
+	color: #ccc;
+	font-size: 12px;
+}
+
+.property-group input[type="text"]:focus,
+.property-group input[type="number"]:focus,
+.property-group select:focus {
+	outline: none;
+	border-color: #0e639c;
+}
+
+.property-group input[type="checkbox"] {
+	margin-right: 6px;
+}
+
+.empty-state {
+	text-align: center;
+	padding: 24px;
+	color: #888;
+	font-size: 12px;
+}
+
+/* 播放控制栏 */
+.playback-controls {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	background: #2d2d2d;
+	border-bottom: 1px solid #3e3e3e;
+}
+
+.time-display {
+	margin-left: 12px;
+	font-size: 12px;
+	color: #ccc;
+	font-family: 'Courier New', monospace;
+}
+
+.zoom-controls {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+#zoomLevel {
+	min-width: 50px;
+	text-align: center;
+	font-size: 12px;
+	color: #ccc;
+}
+
+/* 时间轴容器 */
+.timeline-container {
+	flex: 1;
+	position: relative;
+	overflow: auto;
+	background: #1e1e1e;
+}
+
+/* 时间刻度尺 */
+.timeline-ruler-container {
+	display: flex;
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	background: #2d2d2d;
+	border-bottom: 1px solid #3e3e3e;
+}
+
+.timeline-ruler-spacer {
+	width: 120px;
+	min-width: 120px;
+	background: #2d2d2d;
+	border-right: 1px solid #3e3e3e;
+}
+
+.timeline-ruler {
+	flex: 1;
+	height: 32px;
+	position: relative;
+	background: #2d2d2d;
+}
+
+.ruler-tick {
+	position: absolute;
+	top: 0;
+	height: 100%;
+	border-left: 1px solid #555;
+	display: flex;
+	align-items: flex-start;
+	padding-top: 4px;
+	padding-left: 4px;
+}
+
+.ruler-tick.major {
+	border-left-color: #888;
+}
+
+.ruler-label {
+	font-size: 10px;
+	color: #888;
+	user-select: none;
+}
+
+/* 轨道容器 */
+.timeline-tracks-container {
+	min-height: 400px;
+	position: relative;
+}
+
+.empty-timeline {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	height: 400px;
+	color: #888;
+}
+
+.empty-timeline p {
+	margin-bottom: 16px;
+}
+
+/* 轨道 */
+.track {
+	display: flex;
+	border-bottom: 1px solid #3e3e3e;
+	min-height: 60px;
+	position: relative;
+}
+
+.track.selected {
+	background: #2a2a2a;
+}
+
+.track-header {
+	width: 120px;
+	min-width: 120px;
+	padding: 8px;
+	background: #252526;
+	border-right: 1px solid #3e3e3e;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.track-name {
+	font-size: 12px;
+	font-weight: 600;
+	color: #fff;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.track-type {
+	font-size: 10px;
+	color: #888;
+	text-transform: uppercase;
+}
+
+.track-target {
+	font-size: 10px;
+	color: #666;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.track-content {
+	flex: 1;
+	position: relative;
+	background: #1e1e1e;
+}
+
+/* 片段 */
+.clip {
+	position: absolute;
+	top: 8px;
+	height: 44px;
+	background: #0e639c;
+	border: 1px solid #1177bb;
+	border-radius: 4px;
+	padding: 4px 8px;
+	cursor: move;
+	user-select: none;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	overflow: hidden;
+}
+
+.clip.selected {
+	border-color: #ffcc00;
+	box-shadow: 0 0 0 2px rgba(255, 204, 0, 0.3);
+}
+
+.clip.dragging {
+	opacity: 0.7;
+	z-index: 100;
+}
+
+.clip-name {
+	font-size: 11px;
+	font-weight: 600;
+	color: #fff;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.clip-time {
+	font-size: 9px;
+	color: rgba(255, 255, 255, 0.7);
+	font-family: 'Courier New', monospace;
+}
+
+/* 不同类型的片段颜色 */
+.clip[data-type="animation"] {
+	background: #0e639c;
+	border-color: #1177bb;
+}
+
+.clip[data-type="spine"] {
+	background: #8f67ff;
+	border-color: #a67fff;
+}
+
+.clip[data-type="tween"] {
+	background: #0e7d0e;
+	border-color: #0f9b0f;
+}
+
+.clip[data-type="code"] {
+	background: #d97706;
+	border-color: #f59e0b;
+}
+
+.clip[data-type="audio"] {
+	background: #dc2626;
+	border-color: #ef4444;
+}
+
+.clip[data-type="active"] {
+	background: #7c3aed;
+	border-color: #8b5cf6;
+}
+
+/* 片段调整手柄 */
+.clip-handle {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 6px;
+	cursor: ew-resize;
+	background: rgba(255, 255, 255, 0.1);
+}
+
+.clip-handle.left {
+	left: 0;
+}
+
+.clip-handle.right {
+	right: 0;
+}
+
+.clip-handle:hover {
+	background: rgba(255, 255, 255, 0.3);
+}
+
+/* 播放头 */
+.playhead {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 2px;
+	background: #ff0000;
+	pointer-events: none;
+	z-index: 20;
+	left: 120px;
+}
+
+.playhead::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: -6px;
+	width: 0;
+	height: 0;
+	border-left: 6px solid transparent;
+	border-right: 6px solid transparent;
+	border-top: 8px solid #ff0000;
+}
+
+/* 轨道列表 */
+.track-list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.track-list-item {
+	padding: 8px;
+	background: #3c3c3c;
+	border: 1px solid #555;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: all 0.2s;
+}
+
+.track-list-item:hover {
+	background: #4e4e4e;
+	border-color: #666;
+}
+
+.track-list-item.selected {
+	background: #0e639c;
+	border-color: #1177bb;
+}
+
+.track-list-item-name {
+	font-size: 12px;
+	font-weight: 600;
+	color: #fff;
+	margin-bottom: 4px;
+}
+
+.track-list-item-info {
+	font-size: 10px;
+	color: #888;
+}
+
+/* 片段类型按钮 */
+.clip-types {
+	display: grid;
+	grid-template-columns: repeat(2, 1fr);
+	gap: 8px;
+}
+
+.clip-type-btn {
+	padding: 12px;
+	background: #3c3c3c;
+	border: 1px solid #555;
+	border-radius: 4px;
+	cursor: pointer;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	transition: all 0.2s;
+	color: #ccc;
+}
+
+.clip-type-btn:hover {
+	background: #4e4e4e;
+	border-color: #666;
+}
+
+.clip-type-btn .icon {
+	font-size: 24px;
+}
+
+.clip-type-btn span:last-child {
+	font-size: 11px;
+}
+
+/* 状态栏 */
+.statusbar {
+	padding: 6px 12px;
+	background: #007acc;
+	color: #fff;
+	font-size: 11px;
+	border-top: 1px solid #3e3e3e;
+}
+
+#statusText.success {
+	color: #b7f7b7;
+}
+
+#statusText.error {
+	color: #ffb6b6;
+}
+
+/* 对话框 */
+.dialog-overlay {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: rgba(0, 0, 0, 0.7);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 1000;
+}
+
+.dialog {
+	background: #2d2d2d;
+	border: 1px solid #555;
+	border-radius: 6px;
+	min-width: 400px;
+	max-width: 600px;
+	box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.dialog-header {
+	padding: 16px;
+	border-bottom: 1px solid #3e3e3e;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.dialog-header h3 {
+	font-size: 14px;
+	font-weight: 600;
+	color: #fff;
+}
+
+.dialog-close {
+	background: none;
+	border: none;
+	color: #ccc;
+	font-size: 24px;
+	cursor: pointer;
+	padding: 0;
+	width: 24px;
+	height: 24px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.dialog-close:hover {
+	color: #fff;
+}
+
+.dialog-body {
+	padding: 16px;
+}
+
+.dialog-footer {
+	padding: 16px;
+	border-top: 1px solid #3e3e3e;
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+.form-group {
+	margin-bottom: 16px;
+}
+
+.form-group label {
+	display: block;
+	margin-bottom: 6px;
+	color: #ccc;
+	font-size: 12px;
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group select {
+	width: 100%;
+	padding: 8px;
+	background: #3c3c3c;
+	border: 1px solid #555;
+	border-radius: 3px;
+	color: #ccc;
+	font-size: 12px;
+}
+
+.form-group small {
+	display: block;
+	margin-top: 4px;
+	color: #888;
+	font-size: 11px;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+	width: 12px;
+	height: 12px;
+}
+
+::-webkit-scrollbar-track {
+	background: #1e1e1e;
+}
+
+::-webkit-scrollbar-thumb {
+	background: #555;
+	border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: #666;
+}

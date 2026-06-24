@@ -1,0 +1,34 @@
+{
+	"name": "ui-timeline-editor",
+	"version": "1.0.0",
+	"description": "UI Timeline 可视化编辑器 - 用于编辑 UI 动画时间轴",
+	"author": "Timeline System",
+	"main": "main.js",
+	"scene-script": "scene-script.js",
+	"main-menu": {
+		"Timeline/UI Timeline 编辑器": {
+			"message": "ui-timeline-editor:open"
+		}
+	},
+	"panel": {
+		"main": "panel/index.js",
+		"type": "dockable",
+		"title": "UI Timeline Editor",
+		"width": 1400,
+		"height": 800,
+		"min-width": 1000,
+		"min-height": 600
+	},
+	"messages": {
+		"query-prefab-context": {
+			"methods": [
+				"queryPrefabContext"
+			]
+		},
+		"open": {
+			"methods": [
+				"open"
+			]
+		}
+	}
+}
