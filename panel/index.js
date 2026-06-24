@@ -1314,7 +1314,6 @@ Editor.Panel.extend({
 		// 保存历史记录
 		this.pushHistory();
 
-		const track = editorState.timelineData.tracks[editorState.selectedTrack];
 		const clip = {
 			id: 'clip_' + Date.now(),
 			name: 'New Clip',
