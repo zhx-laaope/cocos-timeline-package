@@ -443,6 +443,17 @@ Editor.Panel.extend({
 		const ruler = this.$el('#timelineRuler');
 		ruler.addEventListener('click', (e) => this.onRulerClick(e));
 
+		// 时间轴容器滚轮事件
+		const tracksContainer = this.$el('#tracksContainer');
+		if (tracksContainer) {
+			tracksContainer.addEventListener('wheel', (e) => this.onTimelineWheel(e), { passive: false });
+		}
+
+		// 时间轴双击适配内容
+		if (ruler) {
+			ruler.addEventListener('dblclick', () => this.frameAll());
+		}
+
 		// 键盘快捷键
 		document.addEventListener('keydown', (e) => this.onKeyDown(e));
 	},
@@ -1446,6 +1457,90 @@ Editor.Panel.extend({
 		this.setStatus('已粘贴片段: ' + (newClip.name || 'Clip'), 'success', 1000);
 	},
 
+	onTimelineWheel(e) {
+		if (!editorState.timelineData) return;
+
+		// Shift 或 Alt 键 + 滚轮 = 水平滚动
+		if (e.shiftKey || e.altKey) {
+			// 让浏览器处理水平滚动
+			return;
+		}
+
+		// 普通滚轮 = 缩放
+		e.preventDefault();
+
+		const delta = e.deltaY;
+		const zoomSpeed = 5; // 每次滚动的缩放量
+
+		// 向上滚动 = 放大，向下滚动 = 缩小
+		const oldZoom = editorState.zoom;
+		if (delta < 0) {
+			editorState.zoom = Math.min(400, editorState.zoom + zoomSpeed);
+		} else {
+			editorState.zoom = Math.max(25, editorState.zoom - zoomSpeed);
+		}
+
+		// 如果缩放级别改变了
+		if (oldZoom !== editorState.zoom) {
+			this.updatePixelsPerSecond();
+			this.$el('#zoomLevel').textContent = editorState.zoom + '%';
+			this.renderTimeline();
+		}
+	},
+
+	frameAll() {
+		if (!editorState.timelineData || !editorState.timelineData.tracks) return;
+
+		const tracks = editorState.timelineData.tracks;
+		if (tracks.length === 0) {
+			// 没有轨道，重置为默认视图
+			editorState.zoom = 100;
+			this.updatePixelsPerSecond();
+			this.$el('#zoomLevel').textContent = editorState.zoom + '%';
+			this.renderTimeline();
+			return;
+		}
+
+		// 找到所有片段的最大结束时间
+		let maxEndTime = 0;
+		tracks.forEach(track => {
+			if (track.clips && track.clips.length > 0) {
+				track.clips.forEach(clip => {
+					const endTime = clip.start + (clip.duration || 0);
+					if (endTime > maxEndTime) {
+						maxEndTime = endTime;
+					}
+				});
+			}
+		});
+
+		// 如果没有片段，使用 timeline 的 duration
+		if (maxEndTime === 0) {
+			maxEndTime = editorState.timelineData.duration || 5.0;
+		}
+
+		// 计算合适的缩放级别
+		// 假设容器宽度约为 800px（可以动态获取）
+		const tracksContainer = this.$el('#tracksContainer');
+		const containerWidth = tracksContainer ? tracksContainer.clientWidth - 120 : 680; // 减去左侧轨道头部的宽度
+
+		// 计算需要的 pixelsPerSecond
+		const targetPPS = containerWidth / maxEndTime * 0.9; // 0.9 留一点边距
+
+		// 根据 pixelsPerSecond 计算 zoom
+		// pixelsPerSecond = 100 * (zoom / 100)
+		const targetZoom = (targetPPS / 100) * 100;
+
+		// 限制缩放范围
+		editorState.zoom = Math.max(25, Math.min(400, targetZoom));
+
+		this.updatePixelsPerSecond();
+		this.$el('#zoomLevel').textContent = editorState.zoom + '%';
+		this.renderTimeline();
+
+		this.setStatus('已适配所有内容', 'success', 1000);
+	},
+
 	onKeyDown(e) {
 		// 如果焦点在输入框，不处理删除快捷键
 		if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
@@ -1479,6 +1574,13 @@ Editor.Panel.extend({
 		if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
 			e.preventDefault();
 			this.redo();
+			return;
+		}
+
+		// F 键 - Frame All（适配所有内容）
+		if (e.key === 'f' || e.key === 'F') {
+			e.preventDefault();
+			this.frameAll();
 			return;
 		}
 
