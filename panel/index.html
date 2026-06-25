@@ -21,6 +21,13 @@
 				</button>
 				<button id="btnSaveAs" class="btn" title="另存为">另存为</button>
 				<div class="toolbar-separator"></div>
+				<button id="btnInstallRuntime" class="btn" title="安装或更新运行时脚本">
+					<span class="icon">⚙</span> 安装运行时
+				</button>
+				<button id="btnBindRuntime" class="btn" title="给当前 Prefab 挂载 TimelineComponent 并绑定当前 Timeline">
+					<span class="icon">🔗</span> 绑定组件
+				</button>
+				<div class="toolbar-separator"></div>
 				<button id="btnUndo" class="btn" title="撤销 (Ctrl+Z)" disabled>
 					<span class="icon">↶</span>
 				</button>
@@ -80,7 +87,7 @@
 				</div>
 
 				<div class="panel-header">
-					<h3>选中片段属性</h3>
+					<h3>选中对象属性</h3>
 				</div>
 				<div class="panel-content" id="clipProperties">
 					<div class="empty-state">未选中片段</div>
@@ -235,7 +242,7 @@
 			</div>
 			<div class="dialog-body">
 				<div class="form-group">
-					<label>轨道类型</label>
+					<label>默认片段类型</label>
 					<select id="newTrackType">
 						<option value="animation">Animation</option>
 						<option value="spine">Spine</option>

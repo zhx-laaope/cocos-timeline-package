@@ -7,40 +7,287 @@ const Electron = require('electron');
 
 const TIMELINE_CONFIGS_URL = 'db://assets/Script/Timeline/configs';
 const TIMELINE_CONFIGS_FS = Path.join(Editor.Project.path, 'assets/Script/Timeline/configs');
+const TIMELINE_RUNTIME_URL = 'db://assets/Script/Timeline';
+const TIMELINE_RUNTIME_FS = Path.join(Editor.Project.path, 'assets/Script/Timeline');
+const TIMELINE_RUNTIME_MARKER = 'UI Timeline Runtime';
+const RUNTIME_TEMPLATES = [
+	{
+		name: 'TimelinePlayer.ts',
+		templateUrl: 'packages://ui-timeline-editor/templates/runtime/TimelinePlayer.ts',
+		targetPath: Path.join(TIMELINE_RUNTIME_FS, 'TimelinePlayer.ts'),
+	},
+	{
+		name: 'TimelineComponent.ts',
+		templateUrl: 'packages://ui-timeline-editor/templates/runtime/TimelineComponent.ts',
+		targetPath: Path.join(TIMELINE_RUNTIME_FS, 'TimelineComponent.ts'),
+	},
+];
+const TIMELINE_COMPONENT_SCRIPT_PATH = Path.join(TIMELINE_RUNTIME_FS, 'TimelineComponent.ts');
 const TIMELINE_COMPONENT_SCRIPT_UUID = '2c738156-8dbd-4360-92da-d98be89efcbd';
 const PREFAB_CONTEXT_POLL_INTERVAL = 1000;
+const TRACK_HEADER_WIDTH = 120;
 const PREFAB_NAME_CACHE = Object.create(null);
+const CLIP_TYPES = ['animation', 'spine', 'tween', 'code', 'audio', 'active'];
+
+function isEditableEventTarget(target) {
+	let node = target;
+	while (node) {
+		if (node.nodeType === 1) {
+			const tagName = String(node.tagName || '').toUpperCase();
+			if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') {
+				return true;
+			}
+			if (node.isContentEditable) {
+				return true;
+			}
+			if (typeof node.getAttribute === 'function') {
+				const contentEditableValue = node.getAttribute('contenteditable');
+				const role = String(node.getAttribute('role') || '').toLowerCase();
+				const contentEditable = contentEditableValue === null ? null : String(contentEditableValue).toLowerCase();
+				if (contentEditable === 'false') {
+					return false;
+				}
+				if (contentEditable === 'true' || contentEditable === '') {
+					return true;
+				}
+				if (role === 'textbox') {
+					return true;
+				}
+			}
+		}
+		node = node.parentElement || node.parentNode;
+	}
+	return false;
+}
+
+function getDeepActiveElement(root) {
+	let activeElement = root && root.activeElement;
+	while (activeElement && activeElement.shadowRoot && activeElement.shadowRoot.activeElement) {
+		activeElement = activeElement.shadowRoot.activeElement;
+	}
+	return activeElement || null;
+}
+
+function isEditableKeyboardEvent(event) {
+	if (!event) return false;
+	if (typeof event.composedPath === 'function') {
+		const path = event.composedPath();
+		if (Array.isArray(path) && path.some((target) => isEditableEventTarget(target))) {
+			return true;
+		}
+	}
+	const ownerDocument = event.target && event.target.ownerDocument
+		? event.target.ownerDocument
+		: (typeof document === 'undefined' ? null : document);
+	if (isEditableEventTarget(getDeepActiveElement(ownerDocument))) {
+		return true;
+	}
+	return isEditableEventTarget(event.target);
+}
+
+function createDefaultEditorState(overrides) {
+	return Object.assign({
+		timelineData: null,
+		currentFile: null,
+		prefabContext: null,
+		contextKey: '',
+		isTimelineEditable: false,
+		selectedTrack: null,
+		selectedClip: null,
+		isPlaying: false,
+		currentTime: 0,
+		playbackDirection: 1,
+		lastPlaybackTime: 0,
+		zoom: 100, // 缩放百分比
+		pixelsPerSecond: 100, // 每秒对应的像素数
+		isDirty: false,
+		statusTimer: null,
+		history: [],
+		historyIndex: -1,
+		maxHistorySize: 50,
+		clipboard: null,
+		selectedClips: [], // [{trackIndex, clipIndex}]
+		scenePreviewActive: false,
+		scenePreviewInFlight: false,
+		scenePreviewPending: null,
+		scenePreviewLastWarning: '',
+		snapEnabled: true,
+		snapThreshold: 10, // 像素阈值
+		snapToClips: true,
+		snapToGrid: true,
+		snapGuides: [], // 吸附辅助线
+	}, overrides || {});
+}
 
 // 编辑器状态
-let editorState = {
-	timelineData: null,
-	currentFile: null,
-	prefabContext: null,
-	contextKey: '',
-	isTimelineEditable: false,
-	selectedTrack: null,
-	selectedClip: null,
-	isPlaying: false,
-	currentTime: 0,
-	zoom: 100, // 缩放百分比
-	pixelsPerSecond: 100, // 每秒对应的像素数
-	isDirty: false,
-	statusTimer: null,
-	// 历史记录
-	history: [],
-	historyIndex: -1,
-	maxHistorySize: 50,
-	// 剪贴板
-	clipboard: null,
-	// 多选
-	selectedClips: [], // [{trackIndex, clipIndex}]
-	// 吸附设置
-	snapEnabled: true,
-	snapThreshold: 10, // 像素阈值
-	snapToClips: true,
-	snapToGrid: true,
-	snapGuides: [], // 吸附辅助线
-};
+let editorState = createDefaultEditorState();
+
+function cloneData(value) {
+	return JSON.parse(JSON.stringify(value));
+}
+
+function clampNumber(value, min, max, fallback) {
+	const number = typeof value === 'number' ? value : parseFloat(value);
+	if (!Number.isFinite(number)) return fallback;
+	if (typeof min === 'number' && number < min) return min;
+	if (typeof max === 'number' && number > max) return max;
+	return number;
+}
+
+function escapeHtml(value) {
+	return String(value === undefined || value === null ? '' : value)
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}
+
+function formatTime(value) {
+	return clampNumber(value, 0, null, 0).toFixed(2);
+}
+
+function stringifyJsonValue(value, fallback) {
+	try {
+		return JSON.stringify(value === undefined ? fallback : value, null, 2);
+	} catch (err) {
+		return JSON.stringify(fallback, null, 2);
+	}
+}
+
+function createDefaultTimeline(name) {
+	return {
+		name: name || 'new_timeline',
+		version: '1.0.0',
+		duration: 5.0,
+		frameRate: 60,
+		loopMode: 'none',
+		autoPlay: false,
+		tracks: [],
+	};
+}
+
+function createDefaultClip(type, start) {
+	const clip = {
+		id: 'clip_' + Date.now(),
+		type: type || 'animation',
+		name: 'New Clip',
+		start: clampNumber(start, 0, null, 0),
+		duration: 1.0,
+		enabled: true,
+	};
+
+	switch (clip.type) {
+		case 'animation':
+			clip.clipName = 'animation_name';
+			clip.speed = 1.0;
+			clip.loop = false;
+			break;
+		case 'spine':
+			clip.animName = 'animation_name';
+			clip.speed = 1.0;
+			clip.loop = false;
+			clip.trackIndex = 0;
+			break;
+		case 'tween':
+			clip.props = { x: 0, y: 0 };
+			clip.from = null;
+			clip.easing = 'linear';
+			break;
+		case 'code':
+			clip.callbackName = 'callback';
+			clip.params = [];
+			break;
+		case 'audio':
+			clip.audioUrl = 'audio/sound';
+			clip.volume = 1.0;
+			clip.loop = false;
+			break;
+		case 'active':
+			clip.active = true;
+			break;
+	}
+
+	return clip;
+}
+
+function getClipType(track, clip) {
+	return (clip && clip.type) || (track && track.type) || 'animation';
+}
+
+function normalizeClip(rawClip, trackType, index) {
+	const source = rawClip && typeof rawClip === 'object' ? rawClip : {};
+	const type = source.type || trackType || 'animation';
+	const defaults = createDefaultClip(type, 0);
+	const clip = Object.assign(defaults, source);
+	clip.id = source.id || ('clip_' + Date.now() + '_' + index);
+	clip.type = type;
+	clip.name = clip.name || 'Clip ' + (index + 1);
+	clip.start = clampNumber(clip.start, 0, null, 0);
+	clip.duration = clampNumber(clip.duration, 0.01, null, 1);
+	clip.enabled = clip.enabled !== false;
+
+	if (type === 'audio') {
+		clip.volume = clampNumber(clip.volume, 0, 1, 1);
+	}
+	if (type === 'spine') {
+		clip.trackIndex = Math.max(0, parseInt(clip.trackIndex, 10) || 0);
+	}
+
+	return clip;
+}
+
+function normalizeTrack(rawTrack, index) {
+	const source = rawTrack && typeof rawTrack === 'object' ? rawTrack : {};
+	const type = source.type || 'animation';
+	const track = Object.assign({
+		id: 'track_' + Date.now() + '_' + index,
+		name: 'Track ' + (index + 1),
+		type,
+		targetPath: '.',
+		enabled: true,
+		locked: false,
+		muted: false,
+		clips: [],
+	}, source);
+
+	track.id = source.id || ('track_' + Date.now() + '_' + index);
+	track.type = track.type || type;
+	track.name = track.name || 'Track ' + (index + 1);
+	track.targetPath = track.targetPath || '.';
+	track.enabled = track.enabled !== false;
+	track.locked = !!track.locked;
+	track.muted = !!track.muted;
+	track.clips = Array.isArray(track.clips)
+		? track.clips.map((clip, clipIndex) => normalizeClip(clip, track.type, clipIndex))
+		: [];
+
+	return track;
+}
+
+function normalizeTimelineData(rawData, fallbackName) {
+	const source = rawData && typeof rawData === 'object' ? rawData : {};
+	const data = Object.assign(createDefaultTimeline(fallbackName), source);
+	data.name = data.name || fallbackName || 'new_timeline';
+	data.version = data.version || '1.0.0';
+	data.duration = clampNumber(data.duration, 0.01, null, 5.0);
+	data.frameRate = Math.max(1, parseInt(data.frameRate, 10) || 60);
+	data.loopMode = ['none', 'loop', 'pingpong'].indexOf(data.loopMode) >= 0 ? data.loopMode : 'none';
+	data.autoPlay = !!data.autoPlay;
+	data.tracks = Array.isArray(data.tracks)
+		? data.tracks.map((track, index) => normalizeTrack(track, index))
+		: [];
+
+	let maxEndTime = 0;
+	data.tracks.forEach((track) => {
+		track.clips.forEach((clip) => {
+			maxEndTime = Math.max(maxEndTime, clip.start + clip.duration);
+		});
+	});
+	data.duration = Math.max(data.duration, Math.ceil(maxEndTime * 100) / 100 || data.duration);
+
+	return data;
+}
 
 function ensureDirectory(filePath) {
 	const dir = Path.dirname(filePath);
@@ -62,6 +309,19 @@ function refreshAsset(filePath) {
 	} catch (err) {
 		Editor.warn('[UI Timeline Editor] 刷新资源失败:', err && err.message ? err.message : err);
 	}
+}
+
+function refreshAssetUrl(url) {
+	if (!Editor.assetdb || !url || typeof Editor.assetdb.refresh !== 'function') return;
+	try {
+		Editor.assetdb.refresh(url);
+	} catch (err) {
+		Editor.warn('[UI Timeline Editor] 刷新资源失败:', err && err.message ? err.message : err);
+	}
+}
+
+function readPackageTemplate(url) {
+	return Fs.readFileSync(Editor.url(url, 'utf8'), 'utf8');
 }
 
 function dbUrlToFspath(url) {
@@ -135,6 +395,146 @@ function readMetaUuid(filePath) {
 	}
 }
 
+function compressUuid(uuid) {
+	if (!uuid || typeof uuid !== 'string') return '';
+	try {
+		if (Editor.Utils && Editor.Utils.UuidUtils && Editor.Utils.UuidUtils.compressUuid) {
+			return Editor.Utils.UuidUtils.compressUuid(uuid) || uuid;
+		}
+	} catch (err) {
+		// Fall back to the raw uuid.
+	}
+	return uuid;
+}
+
+function getTimelineComponentScriptInfo() {
+	const uuid = readMetaUuid(TIMELINE_COMPONENT_SCRIPT_PATH);
+	if (!uuid) return null;
+	return {
+		uuid,
+		typeId: compressUuid(uuid),
+		path: TIMELINE_COMPONENT_SCRIPT_PATH,
+		url: TIMELINE_RUNTIME_URL + '/TimelineComponent.ts',
+	};
+}
+
+function getTimelineComponentTypeIds() {
+	const ids = [TIMELINE_COMPONENT_SCRIPT_UUID];
+	const info = getTimelineComponentScriptInfo();
+	if (info) {
+		ids.push(info.uuid);
+		ids.push(info.typeId);
+	}
+	return ids.filter((item, index) => item && ids.indexOf(item) === index);
+}
+
+function isTimelineComponentType(type, typeIds) {
+	if (!type || typeof type !== 'string') return false;
+	if (/TimelineComponent/.test(type)) return true;
+	return (typeIds || getTimelineComponentTypeIds()).indexOf(type) !== -1;
+}
+
+function getComponentAssetRefKey(component) {
+	if (!component || typeof component !== 'object') return 'timelineAsset';
+	if (Object.prototype.hasOwnProperty.call(component, 'timelineAsset')) return 'timelineAsset';
+	if (Object.prototype.hasOwnProperty.call(component, '_timelineAsset')) return '_timelineAsset';
+	if (Object.prototype.hasOwnProperty.call(component, '_N$timelineAsset')) return '_N$timelineAsset';
+	return 'timelineAsset';
+}
+
+function loopModeToRuntimeEnum(loopMode) {
+	if (loopMode === 'loop') return 1;
+	if (loopMode === 'pingpong') return 2;
+	return 0;
+}
+
+function createTimelineComponentObject(rootNodeIndex, componentTypeId, timelineAssetUuid, timelineData) {
+	return {
+		__type__: componentTypeId,
+		_name: '',
+		_objFlags: 0,
+		node: {
+			__id__: rootNodeIndex,
+		},
+		_enabled: true,
+		timelineAsset: {
+			__uuid__: timelineAssetUuid,
+		},
+		autoPlay: !!(timelineData && timelineData.autoPlay),
+		loopMode: loopModeToRuntimeEnum(timelineData && timelineData.loopMode),
+		speed: 1,
+		_id: '',
+	};
+}
+
+function bindTimelineComponentToPrefabData(prefabData, options) {
+	if (!Array.isArray(prefabData)) {
+		throw new Error('Prefab 数据格式无效');
+	}
+	if (!options || !options.componentTypeId) {
+		throw new Error('缺少 TimelineComponent 脚本类型');
+	}
+	if (!options.timelineAssetUuid) {
+		throw new Error('缺少 Timeline JSON 资源 UUID');
+	}
+
+	const prefab = prefabData[0];
+	const rootNodeIndex = prefab && prefab.data && typeof prefab.data.__id__ === 'number'
+		? prefab.data.__id__
+		: 1;
+	const rootNode = prefabData[rootNodeIndex];
+	if (!rootNode || rootNode.__type__ !== 'cc.Node') {
+		throw new Error('未找到 Prefab 根节点');
+	}
+
+	if (!Array.isArray(rootNode._components)) {
+		rootNode._components = [];
+	}
+
+	const typeIds = options.typeIds || [options.componentTypeId];
+	let componentIndex = -1;
+	for (let i = 0; i < rootNode._components.length; i++) {
+		const ref = rootNode._components[i];
+		const index = ref && typeof ref.__id__ === 'number' ? ref.__id__ : -1;
+		const component = prefabData[index];
+		if (component && isTimelineComponentType(component.__type__, typeIds)) {
+			componentIndex = index;
+			break;
+		}
+	}
+
+	let created = false;
+	if (componentIndex === -1) {
+		componentIndex = prefabData.length;
+		prefabData.push(createTimelineComponentObject(
+			rootNodeIndex,
+			options.componentTypeId,
+			options.timelineAssetUuid,
+			options.timelineData
+		));
+		rootNode._components.push({ __id__: componentIndex });
+		created = true;
+	} else {
+		const component = prefabData[componentIndex];
+		component.__type__ = options.componentTypeId;
+		component.node = { __id__: rootNodeIndex };
+		if (component._enabled === undefined) component._enabled = true;
+		const assetRefKey = getComponentAssetRefKey(component);
+		component[assetRefKey] = { __uuid__: options.timelineAssetUuid };
+		component.autoPlay = !!(options.timelineData && options.timelineData.autoPlay);
+		component.loopMode = loopModeToRuntimeEnum(options.timelineData && options.timelineData.loopMode);
+		if (component.speed === undefined) component.speed = 1;
+		if (component._id === undefined) component._id = '';
+	}
+
+	return {
+		created,
+		componentIndex,
+		rootNodeIndex,
+		rootName: rootNode._name || '',
+	};
+}
+
 function assetUrlExists(url) {
 	const filePath = urlToFspath(url);
 	return !!filePath && Fs.existsSync(filePath);
@@ -154,7 +554,7 @@ function isTimelineComponentObject(item) {
 	if (!item || typeof item !== 'object') return false;
 
 	const type = item.__type__ || '';
-	if (type === TIMELINE_COMPONENT_SCRIPT_UUID || /TimelineComponent/.test(type)) {
+	if (isTimelineComponentType(type)) {
 		return true;
 	}
 
@@ -373,21 +773,7 @@ Editor.Panel.extend({
 
 	initializeEditor() {
 		// 初始化编辑器状态
-		editorState = {
-			timelineData: null,
-			currentFile: null,
-			prefabContext: null,
-			contextKey: '',
-			isTimelineEditable: false,
-			selectedTrack: null,
-			selectedClip: null,
-			isPlaying: false,
-			currentTime: 0,
-			zoom: 100,
-			pixelsPerSecond: 100,
-			isDirty: false,
-			statusTimer: null,
-		};
+		editorState = createDefaultEditorState();
 
 		this.updatePixelsPerSecond();
 	},
@@ -395,6 +781,7 @@ Editor.Panel.extend({
 	close() {
 		this.stopPrefabContextWatcher();
 		this.stopPlayback();
+		this.stopScenePreview();
 		if (editorState.statusTimer) {
 			clearTimeout(editorState.statusTimer);
 			editorState.statusTimer = null;
@@ -407,6 +794,8 @@ Editor.Panel.extend({
 		this.$el('#btnOpen').addEventListener('click', () => this.onOpenTimeline());
 		this.$el('#btnSave').addEventListener('click', () => this.onSaveTimeline());
 		this.$el('#btnSaveAs').addEventListener('click', () => this.onSaveAsTimeline());
+		this.$el('#btnInstallRuntime').addEventListener('click', () => this.onInstallRuntime());
+		this.$el('#btnBindRuntime').addEventListener('click', () => this.onBindRuntime());
 
 		// 快速创建按钮
 		this.$el('#btnQuickCreate').addEventListener('click', () => this.onQuickCreateTimeline());
@@ -435,6 +824,17 @@ Editor.Panel.extend({
 		this.$el('#timelineFrameRate').addEventListener('input', (e) => this.onTimelinePropertyChange('frameRate', parseInt(e.target.value)));
 		this.$el('#timelineLoopMode').addEventListener('change', (e) => this.onTimelinePropertyChange('loopMode', e.target.value));
 		this.$el('#timelineAutoPlay').addEventListener('change', (e) => this.onTimelinePropertyChange('autoPlay', e.target.checked));
+		[
+			'#timelineName',
+			'#timelineDuration',
+			'#timelineFrameRate',
+			'#timelineLoopMode',
+			'#timelineAutoPlay',
+		].forEach((selector) => {
+			const input = this.$el(selector);
+			input.addEventListener('focus', () => this.captureEditHistoryOnce(input));
+			input.addEventListener('blur', () => this.releaseEditHistory(input));
+		});
 
 		// 对话框
 		this.bindDialogEvents();
@@ -450,6 +850,7 @@ Editor.Panel.extend({
 		// 时间轴点击
 		const ruler = this.$el('#timelineRuler');
 		ruler.addEventListener('click', (e) => this.onRulerClick(e));
+		ruler.addEventListener('mousedown', (e) => this.onRulerMouseDown(e));
 
 		// 时间轴容器滚轮事件
 		const tracksContainer = this.$el('#tracksContainer');
@@ -656,10 +1057,13 @@ Editor.Panel.extend({
 		}
 
 		this.stopPlayback();
+		this.stopScenePreview();
 		editorState.currentFile = null;
 		editorState.selectedTrack = null;
 		editorState.selectedClip = null;
+		editorState.selectedClips = [];
 		editorState.currentTime = 0;
+		editorState.playbackDirection = 1;
 		editorState.isPlaying = false;
 		editorState.isDirty = false;
 		this.setPlayButtonIcon(false);
@@ -672,21 +1076,16 @@ Editor.Panel.extend({
 	// 创建空 Timeline
 	createEmptyTimeline() {
 		this.stopPlayback();
+		this.stopScenePreview();
 		editorState.selectedTrack = null;
 		editorState.selectedClip = null;
+		editorState.selectedClips = [];
 		editorState.isPlaying = false;
 		editorState.currentTime = 0;
+		editorState.playbackDirection = 1;
 		this.setPlayButtonIcon(false);
 
-		editorState.timelineData = {
-			name: 'new_timeline',
-			version: '1.0.0',
-			duration: 5.0,
-			frameRate: 60,
-			loopMode: 'none',
-			autoPlay: false,
-			tracks: [],
-		};
+		editorState.timelineData = createDefaultTimeline('new_timeline');
 
 		// 清空历史记录
 		this.clearHistory();
@@ -766,7 +1165,7 @@ Editor.Panel.extend({
 			}
 		}
 
-		this.$$el('input, select').forEach((el) => {
+		this.$$el('input, select, textarea').forEach((el) => {
 			el.disabled = !enabled;
 		});
 
@@ -780,6 +1179,9 @@ Editor.Panel.extend({
 			'#btnZoomOut',
 			'#btnAddTrack',
 			'#btnAddTrackEmpty',
+			'#btnBindRuntime',
+			'#btnUndo',
+			'#btnRedo',
 		];
 		editButtons.forEach((selector) => {
 			const el = this.$el(selector);
@@ -794,6 +1196,7 @@ Editor.Panel.extend({
 			const el = this.$el(selector);
 			if (el) el.disabled = true;
 		});
+		this.updateUndoRedoButtons();
 	},
 
 	ensureTimelineEditable() {
@@ -817,7 +1220,7 @@ Editor.Panel.extend({
 		const ruler = this.$el('#timelineRuler');
 		ruler.innerHTML = '';
 
-		const duration = editorState.timelineData.duration || 5.0;
+		const duration = clampNumber(editorState.timelineData.duration, 0.01, null, 5.0);
 		const pps = editorState.pixelsPerSecond;
 		const totalWidth = duration * pps;
 
@@ -825,14 +1228,14 @@ Editor.Panel.extend({
 
 		// 计算刻度间隔
 		let interval = 1.0; // 默认 1 秒
-		if (editorState.zoom < 50) {
+		if (editorState.zoom >= 400) {
+			interval = 0.1;
+		} else if (editorState.zoom > 200) {
+			interval = 0.5;
+		} else if (editorState.zoom < 50) {
 			interval = 5.0;
 		} else if (editorState.zoom < 100) {
 			interval = 2.0;
-		} else if (editorState.zoom > 200) {
-			interval = 0.5;
-		} else if (editorState.zoom > 400) {
-			interval = 0.1;
 		}
 
 		// 绘制刻度
@@ -893,15 +1296,18 @@ Editor.Panel.extend({
 		if (track.muted) {
 			trackEl.classList.add('muted');
 		}
+		if (track.enabled === false) {
+			trackEl.classList.add('disabled');
+		}
 
 		// 轨道头部
 		const header = document.createElement('div');
 		header.className = 'track-header';
 		header.innerHTML = `
 			<div class="track-info">
-				<div class="track-name">${track.name || 'Track ' + (index + 1)}</div>
-				<div class="track-type">${track.type}</div>
-				<div class="track-target">${track.targetPath || '.'}</div>
+				<div class="track-name">${escapeHtml(track.name || 'Track ' + (index + 1))}</div>
+				<div class="track-type">默认 ${escapeHtml(track.type)}</div>
+				<div class="track-target">${escapeHtml(track.targetPath || '.')}</div>
 			</div>
 			<div class="track-controls">
 				<button class="track-control-btn ${track.locked ? 'active' : ''}" data-action="lock" title="${track.locked ? '解锁' : '锁定'}">
@@ -952,7 +1358,8 @@ Editor.Panel.extend({
 		clipEl.className = 'clip';
 		clipEl.dataset.trackIndex = trackIndex;
 		clipEl.dataset.clipIndex = clipIndex;
-		clipEl.dataset.type = editorState.timelineData.tracks[trackIndex].type;
+		const track = editorState.timelineData.tracks[trackIndex];
+		clipEl.dataset.type = getClipType(track, clip);
 
 		const pps = editorState.pixelsPerSecond;
 		const left = clip.start * pps;
@@ -962,7 +1369,7 @@ Editor.Panel.extend({
 		clipEl.style.width = width + 'px';
 
 		// 检查是否在多选列表中
-		const isInMultiSelect = editorState.selectedClips.some(
+		const isInMultiSelect = (editorState.selectedClips || []).some(
 			s => s.trackIndex === trackIndex && s.clipIndex === clipIndex
 		);
 
@@ -971,8 +1378,8 @@ Editor.Panel.extend({
 		}
 
 		clipEl.innerHTML = `
-			<div class="clip-name">${clip.name || 'Clip ' + (clipIndex + 1)}</div>
-			<div class="clip-time">${clip.start.toFixed(2)}s - ${(clip.start + (clip.duration || 0)).toFixed(2)}s</div>
+			<div class="clip-name">${escapeHtml(clip.name || 'Clip ' + (clipIndex + 1))}</div>
+			<div class="clip-time">${formatTime(clip.start)}s - ${formatTime(clip.start + (clip.duration || 0))}s</div>
 			<div class="clip-handle left"></div>
 			<div class="clip-handle right"></div>
 		`;
@@ -985,6 +1392,7 @@ Editor.Panel.extend({
 
 		// 拖拽移动
 		this.makeClipDraggable(clipEl, trackIndex, clipIndex);
+		this.makeClipResizable(clipEl, trackIndex, clipIndex);
 
 		return clipEl;
 	},
@@ -992,6 +1400,7 @@ Editor.Panel.extend({
 	// 使片段可拖拽
 	makeClipDraggable(clipEl, trackIndex, clipIndex) {
 		let isDragging = false;
+		let hasMoved = false;
 		let startX = 0;
 		let startLeft = 0;
 
@@ -1006,6 +1415,7 @@ Editor.Panel.extend({
 			}
 
 			isDragging = true;
+			hasMoved = false;
 			startX = e.clientX;
 			startLeft = parseFloat(clipEl.style.left);
 			clipEl.classList.add('dragging');
@@ -1020,12 +1430,19 @@ Editor.Panel.extend({
 			if (!isDragging) return;
 
 			const deltaX = e.clientX - startX;
-			let newLeft = Math.max(0, startLeft + deltaX);
+			if (Math.abs(deltaX) < 2 && !hasMoved) return;
+			hasMoved = true;
+			const track = editorState.timelineData.tracks[trackIndex];
+			const clip = track && track.clips ? track.clips[clipIndex] : null;
+			const clipWidth = ((clip && clip.duration) || 0.5) * editorState.pixelsPerSecond;
+			const timelineWidth = clampNumber(editorState.timelineData.duration, 0.01, null, 5.0) * editorState.pixelsPerSecond;
+			const maxLeft = Math.max(0, timelineWidth - clipWidth);
+			let newLeft = Math.max(0, Math.min(maxLeft, startLeft + deltaX));
 
 			// 吸附功能
 			if (editorState.snapEnabled) {
 				const snappedLeft = this.calculateSnap(newLeft, trackIndex, clipIndex);
-				newLeft = snappedLeft;
+				newLeft = Math.max(0, Math.min(maxLeft, snappedLeft));
 			}
 
 			clipEl.style.left = newLeft + 'px';
@@ -1046,6 +1463,15 @@ Editor.Panel.extend({
 				return;
 			}
 
+			if (!hasMoved) {
+				this.setClipSelection(trackIndex, clipIndex, e.ctrlKey || e.metaKey);
+				this.renderTimeline();
+				this.updateClipProperties();
+				document.removeEventListener('mousemove', onMouseMove);
+				document.removeEventListener('mouseup', onMouseUp);
+				return;
+			}
+
 			// 保存历史记录
 			this.pushHistory();
 
@@ -1053,15 +1479,108 @@ Editor.Panel.extend({
 			const newStart = parseFloat(clipEl.style.left) / editorState.pixelsPerSecond;
 			const clip = editorState.timelineData.tracks[trackIndex].clips[clipIndex];
 			clip.start = Math.max(0, newStart);
+			if (!(editorState.selectedClips || []).some((selection) => selection.trackIndex === trackIndex && selection.clipIndex === clipIndex)) {
+				this.setClipSelection(trackIndex, clipIndex, false);
+			}
 
 			this.markDirty();
 			this.renderTimeline();
+			this.updateClipProperties();
 
 			document.removeEventListener('mousemove', onMouseMove);
 			document.removeEventListener('mouseup', onMouseUp);
 		};
 
 		clipEl.addEventListener('mousedown', onMouseDown);
+	},
+
+	// 使片段可调整时长
+	makeClipResizable(clipEl, trackIndex, clipIndex) {
+		const handles = clipEl.querySelectorAll('.clip-handle');
+		handles.forEach((handle) => {
+			let isResizing = false;
+			let startX = 0;
+			let startLeft = 0;
+			let startWidth = 0;
+			let side = 'right';
+
+			const onMouseDown = (e) => {
+				const track = editorState.timelineData.tracks[trackIndex];
+				if (track && track.locked) {
+					this.setStatus('轨道已锁定，无法编辑', 'error', 1500);
+					return;
+				}
+
+				isResizing = true;
+				side = handle.classList.contains('left') ? 'left' : 'right';
+				startX = e.clientX;
+				startLeft = parseFloat(clipEl.style.left) || 0;
+				startWidth = parseFloat(clipEl.style.width) || 0;
+				clipEl.classList.add('resizing');
+
+				document.addEventListener('mousemove', onMouseMove);
+				document.addEventListener('mouseup', onMouseUp);
+
+				e.preventDefault();
+				e.stopPropagation();
+			};
+
+			const onMouseMove = (e) => {
+				if (!isResizing) return;
+
+				const deltaX = e.clientX - startX;
+				const pps = editorState.pixelsPerSecond;
+				const minWidth = Math.max(1, 0.01 * pps);
+				const timelineWidth = clampNumber(editorState.timelineData.duration, 0.01, null, 5.0) * pps;
+
+				if (side === 'left') {
+					let newLeft = Math.max(0, Math.min(startLeft + deltaX, startLeft + startWidth - minWidth));
+					if (editorState.snapEnabled) {
+						newLeft = Math.max(0, Math.min(this.calculateEdgeSnap(newLeft, trackIndex, clipIndex), startLeft + startWidth - minWidth));
+					}
+					clipEl.style.left = newLeft + 'px';
+					clipEl.style.width = (startLeft + startWidth - newLeft) + 'px';
+				} else {
+					let newRight = Math.max(startLeft + minWidth, Math.min(startLeft + startWidth + deltaX, timelineWidth));
+					if (editorState.snapEnabled) {
+						newRight = Math.max(startLeft + minWidth, Math.min(this.calculateEdgeSnap(newRight, trackIndex, clipIndex), timelineWidth));
+					}
+					clipEl.style.width = (newRight - startLeft) + 'px';
+				}
+			};
+
+			const onMouseUp = () => {
+				if (!isResizing) return;
+
+				isResizing = false;
+				clipEl.classList.remove('resizing');
+				this.clearSnapGuides();
+
+				if (!this.ensureTimelineEditable()) {
+					document.removeEventListener('mousemove', onMouseMove);
+					document.removeEventListener('mouseup', onMouseUp);
+					return;
+				}
+
+				this.pushHistory();
+
+				const clip = editorState.timelineData.tracks[trackIndex].clips[clipIndex];
+				const newStart = (parseFloat(clipEl.style.left) || 0) / editorState.pixelsPerSecond;
+				const newDuration = (parseFloat(clipEl.style.width) || 1) / editorState.pixelsPerSecond;
+
+				clip.start = clampNumber(newStart, 0, null, 0);
+				clip.duration = clampNumber(newDuration, 0.01, null, 0.01);
+
+				this.markDirty();
+				this.renderTimeline();
+				this.updateClipProperties();
+
+				document.removeEventListener('mousemove', onMouseMove);
+				document.removeEventListener('mouseup', onMouseUp);
+			};
+
+			handle.addEventListener('mousedown', onMouseDown);
+		});
 	},
 
 	// 渲染轨道列表
@@ -1085,13 +1604,24 @@ Editor.Panel.extend({
 
 			item.innerHTML = `
 				<div class="track-list-item-content">
-					<div class="track-list-item-name">${track.name || 'Track ' + (index + 1)}</div>
-					<div class="track-list-item-info">${track.type} - ${track.targetPath || '.'}</div>
+					<div class="track-list-item-name">${escapeHtml(track.name || 'Track ' + (index + 1))}</div>
+					<div class="track-list-item-info">默认 ${escapeHtml(track.type)} · ${escapeHtml(track.targetPath || '.')}</div>
 				</div>
-				<button class="track-delete-btn" title="删除轨道">×</button>
+				<div class="track-list-actions">
+					<button class="track-move-btn" data-action="up" title="上移" ${index === 0 ? 'disabled' : ''}>↑</button>
+					<button class="track-move-btn" data-action="down" title="下移" ${index === tracks.length - 1 ? 'disabled' : ''}>↓</button>
+					<button class="track-delete-btn" title="删除轨道">×</button>
+				</div>
 			`;
 
 			item.querySelector('.track-list-item-content').addEventListener('click', () => this.onSelectTrack(index));
+			item.querySelectorAll('.track-move-btn').forEach((btn) => {
+				btn.addEventListener('click', (e) => {
+					e.stopPropagation();
+					const action = btn.getAttribute('data-action');
+					this.moveTrack(index, action === 'up' ? -1 : 1);
+				});
+			});
 			item.querySelector('.track-delete-btn').addEventListener('click', (e) => {
 				e.stopPropagation();
 				this.onDeleteTrack(index);
@@ -1102,13 +1632,17 @@ Editor.Panel.extend({
 	},
 
 	// 更新播放头位置
-	updatePlayhead() {
+	updatePlayhead(options = {}) {
 		const playhead = this.$el('#playhead');
 		const pps = editorState.pixelsPerSecond;
-		const left = 120 + (editorState.currentTime * pps);
+		const left = TRACK_HEADER_WIDTH + (editorState.currentTime * pps);
 		playhead.style.left = left + 'px';
 
 		this.$el('#currentTime').textContent = editorState.currentTime.toFixed(2);
+
+		if (!options.skipPreview) {
+			this.previewTimelineAtCurrentTime({ playing: editorState.isPlaying });
+		}
 	},
 
 	// 更新每秒像素数
@@ -1140,6 +1674,100 @@ Editor.Panel.extend({
 		this.setStatus('Timeline 必须保存到当前 Prefab 绑定的文件，不能另存为', 'error');
 	},
 
+	onInstallRuntime() {
+		try {
+			ensureDirectory(Path.join(TIMELINE_RUNTIME_FS, 'placeholder'));
+
+			const installed = [];
+			const skipped = [];
+			for (const item of RUNTIME_TEMPLATES) {
+				const content = readPackageTemplate(item.templateUrl);
+				if (Fs.existsSync(item.targetPath)) {
+					const existing = Fs.readFileSync(item.targetPath, 'utf8');
+					if (existing.indexOf(TIMELINE_RUNTIME_MARKER) === -1) {
+						const shouldOverwrite = confirm(
+							`${item.name} 已存在且不像 UI Timeline 生成文件，是否覆盖？`
+						);
+						if (!shouldOverwrite) {
+							skipped.push(item.name);
+							continue;
+						}
+					}
+				}
+
+				ensureDirectory(item.targetPath);
+				Fs.writeFileSync(item.targetPath, content, 'utf8');
+				installed.push(item.name);
+			}
+
+			refreshAssetUrl(TIMELINE_RUNTIME_URL);
+			RUNTIME_TEMPLATES.forEach((item) => refreshAsset(item.targetPath));
+
+			let message = installed.length > 0
+				? '运行时已安装/更新: ' + installed.join(', ')
+				: '运行时未改动';
+			if (skipped.length > 0) {
+				message += '；已跳过: ' + skipped.join(', ');
+			}
+			this.setStatus(message, installed.length > 0 ? 'success' : 'info', 5000);
+		} catch (err) {
+			this.setStatus('安装运行时失败: ' + (err && err.message ? err.message : err), 'error', 5000);
+		}
+	},
+
+	onBindRuntime() {
+		if (!this.ensureTimelineEditable()) return;
+
+		const context = editorState.prefabContext;
+		const prefabUrl = context && context.prefabUrl;
+		const prefabPath = urlToFspath(prefabUrl);
+		if (!prefabUrl || !prefabPath || !Fs.existsSync(prefabPath)) {
+			this.setStatus('无法绑定：当前 Prefab 文件不存在', 'error', 5000);
+			return;
+		}
+
+		if (!editorState.currentFile || !Fs.existsSync(editorState.currentFile)) {
+			this.setStatus('无法绑定：请先保存当前 Timeline', 'error', 5000);
+			return;
+		}
+
+		const componentInfo = getTimelineComponentScriptInfo();
+		if (!componentInfo) {
+			this.setStatus('无法绑定：请先安装运行时并等待 TimelineComponent.ts 编译生成 meta', 'error', 7000);
+			return;
+		}
+
+		const timelineAssetUuid = readMetaUuid(editorState.currentFile);
+		if (!timelineAssetUuid) {
+			this.setStatus('无法绑定：Timeline JSON meta 尚未生成，请保存后等待资源刷新', 'error', 7000);
+			refreshAsset(editorState.currentFile);
+			return;
+		}
+
+		if (!confirm('将当前 TimelineComponent 绑定到 Prefab 根节点并保存 Prefab，是否继续？')) {
+			return;
+		}
+
+		try {
+			const prefabData = JSON.parse(Fs.readFileSync(prefabPath, 'utf8'));
+			const result = bindTimelineComponentToPrefabData(prefabData, {
+				componentTypeId: componentInfo.typeId,
+				typeIds: getTimelineComponentTypeIds(),
+				timelineAssetUuid,
+				timelineData: editorState.timelineData,
+			});
+
+			Fs.writeFileSync(prefabPath, JSON.stringify(prefabData, null, 2), 'utf8');
+			refreshAsset(prefabPath);
+
+			const verb = result.created ? '已挂载并绑定' : '已更新绑定';
+			this.setStatus(`${verb}: ${result.rootName || Path.basename(prefabUrl, '.prefab')}`, 'success', 5000);
+			this.checkPrefabContext(true);
+		} catch (err) {
+			this.setStatus('绑定失败: ' + (err && err.message ? err.message : err), 'error', 7000);
+		}
+	},
+
 	onQuickCreateTimeline() {
 		const context = editorState.prefabContext;
 		if (!context || !context.inPrefab || !context.prefabUrl || !context.timeline || !context.timeline.missing) {
@@ -1156,15 +1784,7 @@ Editor.Panel.extend({
 		}
 
 		// 创建空 Timeline 数据
-		const newTimeline = {
-			name: prefabName,
-			version: '1.0.0',
-			duration: 5.0,
-			frameRate: 60,
-			loopMode: 'none',
-			autoPlay: false,
-			tracks: [],
-		};
+		const newTimeline = normalizeTimelineData(createDefaultTimeline(prefabName), prefabName);
 
 		try {
 			// 保存文件
@@ -1210,6 +1830,12 @@ Editor.Panel.extend({
 		this.setPlayButtonIcon(editorState.isPlaying);
 
 		if (editorState.isPlaying) {
+			const duration = clampNumber(editorState.timelineData.duration, 0.01, null, 5.0);
+			if (editorState.currentTime >= duration && editorState.playbackDirection >= 0) {
+				editorState.currentTime = 0;
+				editorState.playbackDirection = 1;
+				this.updatePlayhead();
+			}
 			this.startPlayback();
 		} else {
 			this.stopPlayback();
@@ -1221,17 +1847,20 @@ Editor.Panel.extend({
 
 		editorState.isPlaying = false;
 		editorState.currentTime = 0;
+		editorState.playbackDirection = 1;
 
 		this.setPlayButtonIcon(false);
 
 		this.stopPlayback();
-		this.updatePlayhead();
+		this.stopScenePreview();
+		this.updatePlayhead({ skipPreview: true });
 	},
 
 	onSeekToStart() {
 		if (!this.ensureTimelineEditable()) return;
 
 		editorState.currentTime = 0;
+		editorState.playbackDirection = 1;
 		this.updatePlayhead();
 	},
 
@@ -1239,6 +1868,7 @@ Editor.Panel.extend({
 		if (!this.ensureTimelineEditable()) return;
 
 		editorState.currentTime = editorState.timelineData.duration || 5.0;
+		editorState.playbackDirection = 1;
 		this.updatePlayhead();
 	},
 
@@ -1282,12 +1912,18 @@ Editor.Panel.extend({
 			type: type,
 			targetPath: targetPath,
 			enabled: true,
+			locked: false,
+			muted: false,
 			clips: [],
 		};
 
 		editorState.timelineData.tracks.push(track);
+		editorState.selectedTrack = editorState.timelineData.tracks.length - 1;
+		editorState.selectedClip = null;
+		editorState.selectedClips = [];
 		this.markDirty();
 		this.renderTimeline();
+		this.updateClipProperties();
 		this.closeDialog('dialogAddTrack');
 
 		// 清空输入
@@ -1304,6 +1940,10 @@ Editor.Panel.extend({
 		}
 
 		const track = editorState.timelineData.tracks[editorState.selectedTrack];
+		if (!track) {
+			this.setStatus('选中的轨道无效', 'error');
+			return;
+		}
 
 		// 检查轨道是否锁定
 		if (track && track.locked) {
@@ -1314,62 +1954,38 @@ Editor.Panel.extend({
 		// 保存历史记录
 		this.pushHistory();
 
-		const clip = {
-			id: 'clip_' + Date.now(),
-			name: 'New Clip',
-			start: editorState.currentTime,
-			duration: 1.0,
-			enabled: true,
-		};
-
-		// 根据类型添加特定字段
-		switch (type) {
-			case 'animation':
-				clip.clipName = 'animation_name';
-				clip.speed = 1.0;
-				clip.loop = false;
-				break;
-			case 'spine':
-				clip.animName = 'animation_name';
-				clip.speed = 1.0;
-				clip.loop = false;
-				clip.trackIndex = 0;
-				break;
-			case 'tween':
-				clip.props = { x: 0, y: 0 };
-				clip.easing = 'linear';
-				break;
-			case 'code':
-				clip.callbackName = 'callback';
-				clip.params = [];
-				break;
-			case 'audio':
-				clip.audioUrl = 'audio/sound';
-				clip.volume = 1.0;
-				clip.loop = false;
-				break;
-			case 'active':
-				clip.active = true;
-				break;
-		}
+		const clip = createDefaultClip(type, editorState.currentTime);
 
 		track.clips.push(clip);
+		const clipIndex = track.clips.length - 1;
+		editorState.selectedClip = clipIndex;
+		editorState.selectedClips = [{ trackIndex: editorState.selectedTrack, clipIndex }];
+		editorState.timelineData.duration = Math.max(
+			editorState.timelineData.duration,
+			Math.ceil((clip.start + clip.duration) * 100) / 100
+		);
 		this.markDirty();
 		this.renderTimeline();
+		this.updateClipProperties();
 		this.setStatus('已添加片段', 'success');
 	},
 
 	onSelectTrack(index) {
 		if (!this.ensureTimelineEditable()) return;
+		if (!editorState.timelineData.tracks[index]) {
+			this.setStatus('选中的轨道无效', 'error');
+			return;
+		}
 
 		editorState.selectedTrack = index;
 		editorState.selectedClip = null;
+		editorState.selectedClips = [];
 		this.renderTimeline();
 		this.updateClipProperties();
 	},
 
-	onSelectClip(trackIndex, clipIndex, multiSelect = false) {
-		if (!this.ensureTimelineEditable()) return;
+	setClipSelection(trackIndex, clipIndex, multiSelect = false) {
+		editorState.selectedClips = editorState.selectedClips || [];
 
 		if (multiSelect) {
 			// 多选模式
@@ -1401,6 +2017,12 @@ Editor.Panel.extend({
 			editorState.selectedTrack = trackIndex;
 			editorState.selectedClip = clipIndex;
 		}
+	},
+
+	onSelectClip(trackIndex, clipIndex, multiSelect = false) {
+		if (!this.ensureTimelineEditable()) return;
+
+		this.setClipSelection(trackIndex, clipIndex, multiSelect);
 
 		this.renderTimeline();
 		this.updateClipProperties();
@@ -1409,8 +2031,32 @@ Editor.Panel.extend({
 	onRulerClick(e) {
 		if (!this.ensureTimelineEditable()) return;
 
-		const rect = e.target.getBoundingClientRect();
-		const x = e.clientX - rect.left;
+		this.seekFromRulerEvent(e.currentTarget, e);
+	},
+
+	onRulerMouseDown(e) {
+		if (!this.ensureTimelineEditable()) return;
+
+		const ruler = e.currentTarget;
+		this.seekFromRulerEvent(ruler, e);
+
+		const onMouseMove = (moveEvent) => {
+			this.seekFromRulerEvent(ruler, moveEvent);
+		};
+
+		const onMouseUp = () => {
+			document.removeEventListener('mousemove', onMouseMove);
+			document.removeEventListener('mouseup', onMouseUp);
+		};
+
+		document.addEventListener('mousemove', onMouseMove);
+		document.addEventListener('mouseup', onMouseUp);
+		e.preventDefault();
+	},
+
+	seekFromRulerEvent(ruler, e) {
+		const rect = ruler.getBoundingClientRect();
+		const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
 		const time = x / editorState.pixelsPerSecond;
 		editorState.currentTime = Math.max(0, Math.min(time, editorState.timelineData.duration));
 		this.updatePlayhead();
@@ -1419,11 +2065,24 @@ Editor.Panel.extend({
 	onTimelinePropertyChange(key, value) {
 		if (!this.ensureTimelineEditable()) return;
 
+		if (key === 'duration') {
+			value = clampNumber(value, 0.01, null, editorState.timelineData.duration || 5.0);
+		} else if (key === 'frameRate') {
+			value = Math.max(1, parseInt(value, 10) || editorState.timelineData.frameRate || 60);
+		}
+
 		editorState.timelineData[key] = value;
 		this.markDirty();
 
 		if (key === 'duration') {
+			editorState.currentTime = Math.min(editorState.currentTime, value);
 			this.renderTimeline();
+			this.updatePlayhead();
+		} else if (key === 'frameRate') {
+			if (editorState.isPlaying) {
+				this.stopPlayback();
+				this.startPlayback();
+			}
 		}
 	},
 
@@ -1452,14 +2111,61 @@ Editor.Panel.extend({
 		if (editorState.selectedTrack === trackIndex) {
 			editorState.selectedTrack = null;
 			editorState.selectedClip = null;
+			editorState.selectedClips = [];
 		} else if (editorState.selectedTrack > trackIndex) {
 			editorState.selectedTrack--;
 		}
+
+		editorState.selectedClips = (editorState.selectedClips || [])
+			.filter((selection) => selection.trackIndex !== trackIndex)
+			.map((selection) => {
+				if (selection.trackIndex > trackIndex) {
+					return {
+						trackIndex: selection.trackIndex - 1,
+						clipIndex: selection.clipIndex,
+					};
+				}
+				return selection;
+			});
 
 		this.markDirty();
 		this.renderTimeline();
 		this.updateClipProperties();
 		this.setStatus('已删除轨道: ' + trackName, 'success');
+	},
+
+	moveTrack(trackIndex, delta) {
+		if (!this.ensureTimelineEditable()) return;
+
+		const tracks = editorState.timelineData.tracks || [];
+		const targetIndex = trackIndex + delta;
+		if (trackIndex < 0 || trackIndex >= tracks.length || targetIndex < 0 || targetIndex >= tracks.length) {
+			return;
+		}
+
+		this.pushHistory();
+
+		const [track] = tracks.splice(trackIndex, 1);
+		tracks.splice(targetIndex, 0, track);
+
+		const remapTrackIndex = (index) => {
+			if (index === trackIndex) return targetIndex;
+			if (index === targetIndex) return trackIndex;
+			return index;
+		};
+
+		if (editorState.selectedTrack !== null) {
+			editorState.selectedTrack = remapTrackIndex(editorState.selectedTrack);
+		}
+		editorState.selectedClips = (editorState.selectedClips || []).map((selection) => ({
+			trackIndex: remapTrackIndex(selection.trackIndex),
+			clipIndex: selection.clipIndex,
+		}));
+
+		this.markDirty();
+		this.renderTimeline();
+		this.updateClipProperties();
+		this.setStatus('已调整轨道顺序', 'success', 1000);
 	},
 
 	onDeleteClip(trackIndex, clipIndex) {
@@ -1488,6 +2194,17 @@ Editor.Panel.extend({
 
 		// 清除选中状态
 		editorState.selectedClip = null;
+		editorState.selectedClips = (editorState.selectedClips || [])
+			.filter((selection) => !(selection.trackIndex === trackIndex && selection.clipIndex === clipIndex))
+			.map((selection) => {
+				if (selection.trackIndex === trackIndex && selection.clipIndex > clipIndex) {
+					return {
+						trackIndex: selection.trackIndex,
+						clipIndex: selection.clipIndex - 1,
+					};
+				}
+				return selection;
+			});
 
 		this.markDirty();
 		this.renderTimeline();
@@ -1497,6 +2214,7 @@ Editor.Panel.extend({
 
 	copyClip() {
 		if (!this.ensureTimelineEditable()) return;
+		editorState.selectedClips = editorState.selectedClips || [];
 
 		// 检查是否有多选
 		if (editorState.selectedClips.length === 0) {
@@ -1509,9 +2227,11 @@ Editor.Panel.extend({
 		editorState.selectedClips.forEach(({ trackIndex, clipIndex }) => {
 			const track = editorState.timelineData.tracks[trackIndex];
 			if (track && track.clips && track.clips[clipIndex]) {
+				const clipCopy = cloneData(track.clips[clipIndex]);
+				clipCopy.type = getClipType(track, clipCopy);
 				clipsToCopy.push({
 					trackIndex,
-					clip: JSON.parse(JSON.stringify(track.clips[clipIndex]))
+					clip: clipCopy
 				});
 			}
 		});
@@ -1548,14 +2268,18 @@ Editor.Panel.extend({
 			this.setStatus('选中的轨道无效', 'error');
 			return;
 		}
-
-		// 保存历史记录
-		this.pushHistory();
+		if (track.locked) {
+			this.setStatus('轨道已锁定，无法粘贴片段', 'error');
+			return;
+		}
 
 		// 检查剪贴板是数组还是单个片段（兼容旧版）
 		const clipsToPaste = Array.isArray(editorState.clipboard)
 			? editorState.clipboard
 			: [{ trackIndex: editorState.selectedTrack, clip: editorState.clipboard }];
+
+		// 保存历史记录
+		this.pushHistory();
 
 		const newClips = [];
 		clipsToPaste.forEach(({ clip }, index) => {
@@ -1567,10 +2291,15 @@ Editor.Panel.extend({
 
 			// 粘贴到当前播放头位置
 			newClip.start = editorState.currentTime;
+			newClip.type = getClipType(track, newClip);
 
 			// 添加到轨道
 			track.clips.push(newClip);
 			newClips.push({ trackIndex: editorState.selectedTrack, clipIndex: track.clips.length - 1 });
+			editorState.timelineData.duration = Math.max(
+				editorState.timelineData.duration,
+				Math.ceil((newClip.start + (newClip.duration || 0)) * 100) / 100
+			);
 		});
 
 		// 选中新粘贴的片段
@@ -1651,7 +2380,7 @@ Editor.Panel.extend({
 		// 计算合适的缩放级别
 		// 假设容器宽度约为 800px（可以动态获取）
 		const tracksContainer = this.$el('#tracksContainer');
-		const containerWidth = tracksContainer ? tracksContainer.clientWidth - 120 : 680; // 减去左侧轨道头部的宽度
+		const containerWidth = tracksContainer ? tracksContainer.clientWidth - TRACK_HEADER_WIDTH : 680; // 减去左侧轨道头部的宽度
 
 		// 计算需要的 pixelsPerSecond
 		const targetPPS = containerWidth / maxEndTime * 0.9; // 0.9 留一点边距
@@ -1687,7 +2416,7 @@ Editor.Panel.extend({
 			const timeInSeconds = position / pps;
 			const nearestSecond = Math.round(timeInSeconds);
 			const gridPosition = nearestSecond * pps;
-			snapTargets.push({ position: gridPosition, type: 'grid' });
+			snapTargets.push({ position: gridPosition, guidePosition: gridPosition, type: 'grid' });
 		}
 
 		// 2. 吸附到其他片段
@@ -1702,13 +2431,13 @@ Editor.Panel.extend({
 					const clipRight = (clip.start + (clip.duration || 0)) * pps;
 
 					// 吸附到片段的左边缘（当前片段的左边缘）
-					snapTargets.push({ position: clipLeft, type: 'clip-start' });
+					snapTargets.push({ position: clipLeft, guidePosition: clipLeft, type: 'clip-start' });
 					// 吸附到片段的右边缘（当前片段的左边缘）
-					snapTargets.push({ position: clipRight, type: 'clip-end' });
+					snapTargets.push({ position: clipRight, guidePosition: clipRight, type: 'clip-end' });
 					// 吸附到片段的左边缘（当前片段的右边缘）
-					snapTargets.push({ position: clipLeft - clipWidth, type: 'clip-start-right' });
+					snapTargets.push({ position: clipLeft - clipWidth, guidePosition: clipLeft, type: 'clip-start-right' });
 					// 吸附到片段的右边缘（当前片段的右边缘）
-					snapTargets.push({ position: clipRight - clipWidth, type: 'clip-end-right' });
+					snapTargets.push({ position: clipRight - clipWidth, guidePosition: clipRight, type: 'clip-end-right' });
 				});
 			});
 		}
@@ -1727,7 +2456,53 @@ Editor.Panel.extend({
 
 		// 如果找到吸附目标
 		if (bestSnap) {
-			this.showSnapGuide(bestSnap.position + clipWidth / 2); // 在片段中心显示辅助线
+			this.showSnapGuide(bestSnap.guidePosition);
+			return bestSnap.position;
+		}
+
+		this.clearSnapGuides();
+		return position;
+	},
+
+	// 计算单个边缘的吸附位置
+	calculateEdgeSnap(position, trackIndex, clipIndex) {
+		if (!editorState.snapEnabled) return position;
+
+		const threshold = editorState.snapThreshold;
+		const pps = editorState.pixelsPerSecond;
+		const tracks = editorState.timelineData.tracks;
+		const snapTargets = [];
+
+		if (editorState.snapToGrid) {
+			const timeInSeconds = position / pps;
+			const nearestSecond = Math.round(timeInSeconds);
+			const gridPosition = nearestSecond * pps;
+			snapTargets.push({ position: gridPosition, type: 'grid' });
+		}
+
+		if (editorState.snapToClips) {
+			tracks.forEach((track, tIndex) => {
+				if (!track.clips) return;
+				track.clips.forEach((clip, cIndex) => {
+					if (tIndex === trackIndex && cIndex === clipIndex) return;
+					snapTargets.push({ position: clip.start * pps, type: 'clip-start' });
+					snapTargets.push({ position: (clip.start + (clip.duration || 0)) * pps, type: 'clip-end' });
+				});
+			});
+		}
+
+		let bestSnap = null;
+		let bestDistance = threshold;
+		snapTargets.forEach((target) => {
+			const distance = Math.abs(position - target.position);
+			if (distance < bestDistance) {
+				bestDistance = distance;
+				bestSnap = target;
+			}
+		});
+
+		if (bestSnap) {
+			this.showSnapGuide(bestSnap.position);
 			return bestSnap.position;
 		}
 
@@ -1744,7 +2519,7 @@ Editor.Panel.extend({
 
 		const guide = document.createElement('div');
 		guide.className = 'snap-guide';
-		guide.style.left = position + 'px';
+		guide.style.left = (TRACK_HEADER_WIDTH + position) + 'px';
 		tracksContainer.appendChild(guide);
 
 		editorState.snapGuides.push(guide);
@@ -1752,6 +2527,7 @@ Editor.Panel.extend({
 
 	// 清除吸附辅助线
 	clearSnapGuides() {
+		editorState.snapGuides = editorState.snapGuides || [];
 		editorState.snapGuides.forEach(guide => {
 			if (guide.parentNode) {
 				guide.parentNode.removeChild(guide);
@@ -1801,6 +2577,7 @@ Editor.Panel.extend({
 	// 批量删除选中的片段
 	deleteSelectedClips() {
 		if (!this.ensureTimelineEditable()) return;
+		editorState.selectedClips = editorState.selectedClips || [];
 
 		if (editorState.selectedClips.length === 0) {
 			this.setStatus('没有选中的片段', 'error');
@@ -1889,60 +2666,65 @@ Editor.Panel.extend({
 	},
 
 	onKeyDown(e) {
-		// 如果焦点在输入框，只允许部分快捷键
-		const isInInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT';
-
-		if (isInInput) {
-			// 输入框中只允许撤销/重做快捷键，其他全部忽略
-			if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-				// 允许撤销/重做
-			} else {
-				// 其他快捷键都不处理，让输入框正常工作
-				return;
-			}
-		}
+		if (isEditableKeyboardEvent(e)) return;
 
 		if (!editorState.isTimelineEditable) return;
 
+		const key = String(e.key || '').toLowerCase();
+
 		// Ctrl+C 复制
-		if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+		if ((e.ctrlKey || e.metaKey) && key === 'c') {
 			e.preventDefault();
 			this.copyClip();
 			return;
 		}
 
 		// Ctrl+V 粘贴
-		if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+		if ((e.ctrlKey || e.metaKey) && key === 'v') {
 			e.preventDefault();
 			this.pasteClip();
 			return;
 		}
 
 		// Ctrl+A 全选
-		if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+		if ((e.ctrlKey || e.metaKey) && key === 'a') {
 			e.preventDefault();
 			this.selectAllClips();
 			return;
 		}
 
 		// Ctrl+Z 撤销
-		if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+		if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
 			e.preventDefault();
 			this.undo();
 			return;
 		}
 
 		// Ctrl+Y 或 Ctrl+Shift+Z 重做
-		if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+		if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
 			e.preventDefault();
 			this.redo();
 			return;
 		}
 
 		// F 键 - Frame All（适配所有内容）
-		if (e.key === 'f' || e.key === 'F') {
+		if (key === 'f') {
 			e.preventDefault();
 			this.frameAll();
+			return;
+		}
+
+		// 左右方向键 - 逐帧移动播放头或选中片段
+		if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+			e.preventDefault();
+			const direction = e.key === 'ArrowLeft' ? -1 : 1;
+			const frameStep = 1 / Math.max(1, parseInt(editorState.timelineData.frameRate, 10) || 60);
+			const step = frameStep * (e.shiftKey ? 10 : 1) * direction;
+			if (editorState.selectedClips && editorState.selectedClips.length > 0) {
+				this.nudgeSelectedClips(step);
+			} else {
+				this.seekBy(step);
+			}
 			return;
 		}
 
@@ -1951,19 +2733,273 @@ Editor.Panel.extend({
 			e.preventDefault();
 
 			// 批量删除选中的片段
-			if (editorState.selectedClips.length > 0) {
+			if (editorState.selectedClips && editorState.selectedClips.length > 0) {
 				this.deleteSelectedClips();
 			}
 			// 删除选中的轨道（如果没有选中片段）
 			else if (editorState.selectedTrack !== null) {
 				this.onDeleteTrack(editorState.selectedTrack);
 			}
+			else {
+				this.setStatus('请先选中要删除的片段或轨道', 'error');
+			}
 		}
+	},
+
+	seekBy(deltaTime) {
+		const duration = clampNumber(editorState.timelineData.duration, 0.01, null, 5.0);
+		editorState.currentTime = Math.max(0, Math.min(duration, editorState.currentTime + deltaTime));
+		this.updatePlayhead();
+	},
+
+	nudgeSelectedClips(deltaTime) {
+		if (!this.ensureTimelineEditable()) return;
+
+		const selections = editorState.selectedClips || [];
+		if (selections.length === 0) return;
+
+		const lockedSelection = selections.find(({ trackIndex }) => {
+			const track = editorState.timelineData.tracks[trackIndex];
+			return track && track.locked;
+		});
+		if (lockedSelection) {
+			this.setStatus('轨道已锁定，无法移动片段', 'error', 1500);
+			return;
+		}
+
+		let minStart = Infinity;
+		let maxEnd = 0;
+		selections.forEach(({ trackIndex, clipIndex }) => {
+			const track = editorState.timelineData.tracks[trackIndex];
+			const clip = track && track.clips ? track.clips[clipIndex] : null;
+			if (!clip) return;
+			minStart = Math.min(minStart, clip.start);
+			maxEnd = Math.max(maxEnd, clip.start + (clip.duration || 0));
+		});
+		if (!Number.isFinite(minStart)) return;
+
+		const duration = clampNumber(editorState.timelineData.duration, 0.01, null, 5.0);
+		const clampedDelta = Math.max(-minStart, Math.min(deltaTime, duration - maxEnd));
+		if (Math.abs(clampedDelta) < 0.000001) return;
+
+		this.pushHistory();
+		selections.forEach(({ trackIndex, clipIndex }) => {
+			const clip = editorState.timelineData.tracks[trackIndex].clips[clipIndex];
+			clip.start = Math.max(0, clip.start + clampedDelta);
+		});
+		this.markDirty();
+		this.renderTimeline();
+		this.updateClipProperties();
+	},
+
+	getClipSpecificFields(type, clip) {
+		switch (type) {
+			case 'animation':
+				return [
+					{ label: 'Animation 剪辑名', prop: 'clipName', type: 'text', value: clip.clipName || '' },
+					{ label: '播放速度', prop: 'speed', type: 'number', step: '0.1', min: '0', value: clip.speed === undefined ? 1 : clip.speed },
+					{ label: '循环', prop: 'loop', type: 'checkbox', value: !!clip.loop },
+				];
+			case 'spine':
+				return [
+					{ label: 'Spine 动画名', prop: 'animName', type: 'text', value: clip.animName || '' },
+					{ label: 'Spine 轨道索引', prop: 'trackIndex', type: 'number', step: '1', min: '0', value: clip.trackIndex || 0 },
+					{ label: '播放速度', prop: 'speed', type: 'number', step: '0.1', min: '0', value: clip.speed === undefined ? 1 : clip.speed },
+					{ label: '循环', prop: 'loop', type: 'checkbox', value: !!clip.loop },
+				];
+			case 'tween':
+				return [
+					{ label: '目标属性 props (JSON)', prop: 'props', type: 'json', value: stringifyJsonValue(clip.props, {}) },
+					{ label: '起始属性 from (JSON 或 null)', prop: 'from', type: 'json', value: stringifyJsonValue(clip.from, null) },
+					{
+						label: '缓动',
+						prop: 'easing',
+						type: 'select',
+						value: clip.easing || 'linear',
+						options: ['linear', 'sineIn', 'sineOut', 'sineInOut', 'quadIn', 'quadOut', 'quadInOut', 'cubicIn', 'cubicOut', 'cubicInOut', 'backOut', 'bounceOut'],
+					},
+				];
+			case 'code':
+				return [
+					{ label: '回调名称', prop: 'callbackName', type: 'text', value: clip.callbackName || '' },
+					{ label: '回调参数 params (JSON 数组)', prop: 'params', type: 'json', value: stringifyJsonValue(clip.params, []) },
+				];
+			case 'audio':
+				return [
+					{ label: '音频资源路径', prop: 'audioUrl', type: 'text', value: clip.audioUrl || '' },
+					{ label: '音量', prop: 'volume', type: 'number', step: '0.01', min: '0', max: '1', value: clip.volume === undefined ? 1 : clip.volume },
+					{ label: '循环', prop: 'loop', type: 'checkbox', value: !!clip.loop },
+				];
+			case 'active':
+				return [
+					{ label: '激活节点', prop: 'active', type: 'checkbox', value: clip.active !== false },
+				];
+			default:
+				return [];
+		}
+	},
+
+	renderClipPropertyField(field) {
+		const label = escapeHtml(field.label);
+		const prop = escapeHtml(field.prop);
+
+		if (field.type === 'checkbox') {
+			return `
+				<div class="property-group">
+					<label>
+						<input type="checkbox" data-prop="${prop}" ${field.value ? 'checked' : ''}>
+						${label}
+					</label>
+				</div>
+			`;
+		}
+
+		if (field.type === 'json') {
+			return `
+				<div class="property-group">
+					<label>${label}</label>
+					<textarea data-prop="${prop}" data-json="true" spellcheck="false">${escapeHtml(field.value)}</textarea>
+				</div>
+			`;
+		}
+
+		if (field.type === 'select') {
+			const options = (field.options || []).map((option) => {
+				const escapedOption = escapeHtml(option);
+				return `<option value="${escapedOption}" ${option === field.value ? 'selected' : ''}>${escapedOption}</option>`;
+			}).join('');
+			return `
+				<div class="property-group">
+					<label>${label}</label>
+					<select data-prop="${prop}">${options}</select>
+				</div>
+			`;
+		}
+
+		const attrs = [
+			`type="${escapeHtml(field.type || 'text')}"`,
+			`value="${escapeHtml(field.value)}"`,
+			`data-prop="${prop}"`,
+		];
+		if (field.step !== undefined) attrs.push(`step="${escapeHtml(field.step)}"`);
+		if (field.min !== undefined) attrs.push(`min="${escapeHtml(field.min)}"`);
+		if (field.max !== undefined) attrs.push(`max="${escapeHtml(field.max)}"`);
+
+		return `
+			<div class="property-group">
+				<label>${label}</label>
+				<input ${attrs.join(' ')}>
+			</div>
+		`;
+	},
+
+	applyClipPropertyInput(input, clip) {
+		if (!this.ensureTimelineEditable()) return;
+		this.captureEditHistoryOnce(input);
+
+		const prop = input.getAttribute('data-prop');
+		let value = input.value;
+
+		if (input.getAttribute('data-json') === 'true') {
+			try {
+				value = JSON.parse(input.value);
+				input.classList.remove('invalid');
+			} catch (err) {
+				input.classList.add('invalid');
+				this.setStatus(prop + ' 不是有效 JSON', 'error', 2000);
+				return;
+			}
+		} else if (input.type === 'checkbox') {
+			value = input.checked;
+		} else if (input.type === 'number') {
+			value = parseFloat(input.value);
+			if (!Number.isFinite(value)) {
+				this.setStatus(prop + ' 不是有效数字', 'error', 2000);
+				return;
+			}
+		}
+
+		if (prop === 'start') {
+			value = clampNumber(value, 0, null, clip.start || 0);
+		} else if (prop === 'duration') {
+			value = clampNumber(value, 0.01, null, clip.duration || 1);
+		} else if (prop === 'volume') {
+			value = clampNumber(value, 0, 1, 1);
+		} else if (prop === 'trackIndex') {
+			value = Math.max(0, parseInt(value, 10) || 0);
+		} else if (prop === 'speed') {
+			value = clampNumber(value, 0, null, 1);
+		}
+
+		clip[prop] = value;
+		editorState.timelineData.duration = Math.max(
+			editorState.timelineData.duration,
+			Math.ceil((clip.start + clip.duration) * 100) / 100
+		);
+		this.markDirty();
+		this.renderTimeline();
+	},
+
+	applyTrackPropertyInput(input, track) {
+		if (!this.ensureTimelineEditable()) return;
+		this.captureEditHistoryOnce(input);
+
+		const prop = input.getAttribute('data-prop');
+		let value = input.value;
+
+		if (input.type === 'checkbox') {
+			value = input.checked;
+		}
+
+		if (prop === 'name') {
+			value = value || 'Track';
+		} else if (prop === 'targetPath') {
+			value = value || '.';
+		} else if (prop === 'type') {
+			value = CLIP_TYPES.indexOf(value) >= 0 ? value : 'animation';
+		}
+
+		track[prop] = value;
+		this.markDirty();
+		this.renderTimeline();
+	},
+
+	renderSelectedTrackProperties(panel, track, trackIndex) {
+		const fields = [
+			{ label: '轨道名称', prop: 'name', type: 'text', value: track.name || 'Track ' + (trackIndex + 1) },
+			{ label: '默认片段类型', prop: 'type', type: 'select', value: track.type || 'animation', options: CLIP_TYPES },
+			{ label: '目标节点路径', prop: 'targetPath', type: 'text', value: track.targetPath || '.' },
+			{ label: '启用', prop: 'enabled', type: 'checkbox', value: track.enabled !== false },
+			{ label: '锁定', prop: 'locked', type: 'checkbox', value: !!track.locked },
+			{ label: '静音', prop: 'muted', type: 'checkbox', value: !!track.muted },
+		];
+
+		panel.innerHTML = `
+			<div class="clip-property-type">TRACK / NODE</div>
+			${fields.map((field) => this.renderClipPropertyField(field)).join('')}
+			<div class="property-group property-actions">
+				<button id="btnDeleteTrackFromProps" class="btn btn-danger">删除轨道</button>
+			</div>
+		`;
+
+		panel.querySelector('#btnDeleteTrackFromProps').addEventListener('click', () => {
+			this.onDeleteTrack(trackIndex);
+		});
+
+		panel.querySelectorAll('input, select, textarea').forEach((input) => {
+			input.addEventListener('focus', () => this.captureEditHistoryOnce(input));
+			input.addEventListener('blur', () => this.releaseEditHistory(input));
+			const eventName = input.type === 'checkbox' ? 'change' : 'input';
+			input.addEventListener(eventName, () => {
+				this.applyTrackPropertyInput(input, track);
+			});
+		});
 	},
 
 	// 更新片段属性面板
 	updateClipProperties() {
 		const panel = this.$el('#clipProperties');
+		editorState.selectedClips = editorState.selectedClips || [];
 
 		// 多选状态
 		if (editorState.selectedClips.length > 1) {
@@ -1971,22 +3007,31 @@ Editor.Panel.extend({
 				<div class="property-group">
 					<label>已选中 ${editorState.selectedClips.length} 个片段</label>
 				</div>
-				<div class="property-group" style="display: flex; gap: 8px;">
-					<button id="btnCopyClips" class="btn" style="flex: 1;">复制</button>
-					<button id="btnDeleteClips" class="btn btn-danger" style="flex: 1;">删除</button>
+				<div class="property-group property-actions">
+					<button id="btnCopyClips" class="btn">复制</button>
+					<button id="btnDeleteClips" class="btn btn-danger">删除</button>
 				</div>
 			`;
 
-			// 绑定批量复制按钮
 			panel.querySelector('#btnCopyClips').addEventListener('click', () => {
 				this.copyClip();
 			});
 
-			// 绑定批量删除按钮
 			panel.querySelector('#btnDeleteClips').addEventListener('click', () => {
 				this.deleteSelectedClips();
 			});
 
+			return;
+		}
+
+		if (editorState.selectedTrack !== null && editorState.selectedClip === null) {
+			const track = editorState.timelineData.tracks[editorState.selectedTrack];
+			if (!track) {
+				editorState.selectedTrack = null;
+				panel.innerHTML = '<div class="empty-state">未选中片段</div>';
+				return;
+			}
+			this.renderSelectedTrackProperties(panel, track, editorState.selectedTrack);
 			return;
 		}
 
@@ -1999,74 +3044,177 @@ Editor.Panel.extend({
 		if (!track || !track.clips || !track.clips[editorState.selectedClip]) {
 			editorState.selectedTrack = null;
 			editorState.selectedClip = null;
+			editorState.selectedClips = [];
 			panel.innerHTML = '<div class="empty-state">未选中片段</div>';
 			return;
 		}
 
 		const clip = track.clips[editorState.selectedClip];
+		const clipType = getClipType(track, clip);
+		clip.type = clipType;
 
-		// TODO: 根据片段类型显示不同的属性编辑器
+		const commonFields = [
+			{ label: '片段名称', prop: 'name', type: 'text', value: clip.name || '' },
+			{ label: '启用', prop: 'enabled', type: 'checkbox', value: clip.enabled !== false },
+			{ label: '开始时间（秒）', prop: 'start', type: 'number', step: '0.01', min: '0', value: clip.start },
+			{ label: '持续时间（秒）', prop: 'duration', type: 'number', step: '0.01', min: '0.01', value: clip.duration || 0.01 },
+		];
+		const fields = commonFields.concat(this.getClipSpecificFields(clipType, clip));
+
 		panel.innerHTML = `
-			<div class="property-group">
-				<label>片段名称</label>
-				<input type="text" value="${clip.name || ''}" data-prop="name">
-			</div>
-			<div class="property-group">
-				<label>开始时间（秒）</label>
-				<input type="number" value="${clip.start}" step="0.1" data-prop="start">
-			</div>
-			<div class="property-group">
-				<label>持续时间（秒）</label>
-				<input type="number" value="${clip.duration || 0}" step="0.1" data-prop="duration">
-			</div>
-			<div class="property-group" style="display: flex; gap: 8px;">
-				<button id="btnCopyClip" class="btn" style="flex: 1;">复制</button>
-				<button id="btnDeleteClip" class="btn btn-danger" style="flex: 1;">删除</button>
+			<div class="clip-property-type">${escapeHtml(clipType.toUpperCase())}</div>
+			${fields.map((field) => this.renderClipPropertyField(field)).join('')}
+			<div class="property-group property-actions">
+				<button id="btnCopyClip" class="btn">复制</button>
+				<button id="btnDeleteClip" class="btn btn-danger">删除</button>
 			</div>
 		`;
 
-		// 绑定复制按钮
 		panel.querySelector('#btnCopyClip').addEventListener('click', () => {
 			this.copyClip();
 		});
 
-		// 绑定删除按钮
 		panel.querySelector('#btnDeleteClip').addEventListener('click', () => {
 			this.onDeleteClip(editorState.selectedTrack, editorState.selectedClip);
 		});
 
-		// 绑定属性变化事件
-		panel.querySelectorAll('input').forEach(input => {
-			input.addEventListener('input', (e) => {
-				if (!this.ensureTimelineEditable()) return;
-
-				const prop = e.target.getAttribute('data-prop');
-				let value = e.target.value;
-
-				if (e.target.type === 'number') {
-					value = parseFloat(value);
-				}
-
-				clip[prop] = value;
-				this.markDirty();
-				this.renderTimeline();
+		panel.querySelectorAll('input, select, textarea').forEach((input) => {
+			input.addEventListener('focus', () => this.captureEditHistoryOnce(input));
+			input.addEventListener('blur', () => this.releaseEditHistory(input));
+			const eventName = input.getAttribute('data-json') === 'true' || input.type === 'checkbox' || input.tagName === 'SELECT'
+				? 'change'
+				: 'input';
+			input.addEventListener(eventName, () => {
+				this.applyClipPropertyInput(input, clip);
 			});
 		});
 	},
 
 	// 播放控制
+	callTimelineSceneScript(method, payload, callback) {
+		const done = typeof callback === 'function' ? callback : function () {};
+
+		if (Editor.Scene && typeof Editor.Scene.callSceneScript === 'function') {
+			Editor.Scene.callSceneScript('ui-timeline-editor', method, payload || {}, done);
+			return;
+		}
+
+		if (Editor.Ipc && typeof Editor.Ipc.sendToMain === 'function') {
+			Editor.Ipc.sendToMain('ui-timeline-editor:' + method, payload || {}, done);
+			return;
+		}
+
+		done(null, {
+			ok: false,
+			warnings: ['当前编辑器不支持 SceneScript 调用'],
+		});
+	},
+
+	previewTimelineAtCurrentTime(options = {}) {
+		if (!editorState.isTimelineEditable || !editorState.timelineData) return;
+
+		const payload = {
+			time: editorState.currentTime,
+			playing: !!options.playing,
+			timelineData: editorState.timelineData,
+		};
+
+		if (editorState.scenePreviewInFlight) {
+			editorState.scenePreviewPending = payload;
+			return;
+		}
+
+		editorState.scenePreviewInFlight = true;
+		this.callTimelineSceneScript('preview-timeline', payload, (err, result) => {
+			editorState.scenePreviewInFlight = false;
+
+			if (err) {
+				this.reportScenePreviewWarning(err.message || String(err));
+			} else if (result && result.ok === false) {
+				this.reportScenePreviewWarning((result.warnings && result.warnings[0]) || '预览失败');
+			} else if (result && result.warnings && result.warnings.length > 0) {
+				this.reportScenePreviewWarning(result.warnings[0]);
+			} else {
+				editorState.scenePreviewLastWarning = '';
+			}
+
+			editorState.scenePreviewActive = !!(result && result.ok !== false);
+
+			const pending = editorState.scenePreviewPending;
+			editorState.scenePreviewPending = null;
+			if (pending) {
+				this.previewTimelineAtCurrentTime({
+					playing: pending.playing,
+				});
+			}
+		});
+	},
+
+	reportScenePreviewWarning(message) {
+		if (!message || message === editorState.scenePreviewLastWarning) return;
+		editorState.scenePreviewLastWarning = message;
+		this.setStatus('预览提示: ' + message, 'error', 2000);
+	},
+
+	stopScenePreview(callback) {
+		editorState.scenePreviewPending = null;
+		editorState.scenePreviewLastWarning = '';
+		this.callTimelineSceneScript('stop-preview', {}, (err, result) => {
+			editorState.scenePreviewActive = false;
+			if (err) {
+				this.reportScenePreviewWarning(err.message || String(err));
+			} else if (result && result.ok === false && result.warnings && result.warnings.length > 0) {
+				this.reportScenePreviewWarning(result.warnings[0]);
+			}
+			if (typeof callback === 'function') {
+				callback(err, result);
+			}
+		});
+	},
+
 	startPlayback() {
 		if (this.playbackInterval) return;
 
+		const frameRate = Math.max(1, parseInt(editorState.timelineData.frameRate, 10) || 60);
+		const intervalMs = Math.max(8, Math.floor(1000 / frameRate));
+		editorState.lastPlaybackTime = Date.now();
+
 		this.playbackInterval = setInterval(() => {
-			editorState.currentTime += 0.016; // ~60fps
+			const now = Date.now();
+			const delta = Math.max(0, (now - editorState.lastPlaybackTime) / 1000);
+			editorState.lastPlaybackTime = now;
+			this.advancePlayback(delta);
+		}, intervalMs);
+	},
 
-			if (editorState.currentTime >= editorState.timelineData.duration) {
-				editorState.currentTime = 0;
+	advancePlayback(delta) {
+		const duration = clampNumber(editorState.timelineData.duration, 0.01, null, 5.0);
+		const loopMode = editorState.timelineData.loopMode || 'none';
+		const direction = editorState.playbackDirection || 1;
+		let nextTime = editorState.currentTime + delta * direction;
+
+		if (loopMode === 'loop') {
+			while (nextTime >= duration) nextTime -= duration;
+			while (nextTime < 0) nextTime += duration;
+		} else if (loopMode === 'pingpong') {
+			if (nextTime >= duration) {
+				nextTime = duration - (nextTime - duration);
+				editorState.playbackDirection = -1;
 			}
+			if (nextTime <= 0) {
+				nextTime = -nextTime;
+				editorState.playbackDirection = 1;
+			}
+			nextTime = Math.max(0, Math.min(duration, nextTime));
+		} else if (nextTime >= duration || nextTime <= 0) {
+			nextTime = direction >= 0 ? duration : 0;
+			editorState.isPlaying = false;
+			this.setPlayButtonIcon(false);
+			this.stopPlayback();
+		}
 
-			this.updatePlayhead();
-		}, 16);
+		editorState.currentTime = Math.max(0, Math.min(duration, nextTime));
+		this.updatePlayhead();
 	},
 
 	stopPlayback() {
@@ -2089,14 +3237,16 @@ Editor.Panel.extend({
 	loadTimelineFromFile(filePath, options = {}) {
 		try {
 			const content = Fs.readFileSync(filePath, 'utf8');
-			const data = JSON.parse(content);
+			const data = normalizeTimelineData(JSON.parse(content), Path.basename(filePath, '.json'));
 
 			this.stopPlayback();
 			editorState.timelineData = data;
 			editorState.currentFile = filePath;
 			editorState.selectedTrack = null;
 			editorState.selectedClip = null;
+			editorState.selectedClips = [];
 			editorState.currentTime = 0;
+			editorState.playbackDirection = 1;
 			editorState.isPlaying = false;
 			editorState.isDirty = false;
 			this.setPlayButtonIcon(false);
@@ -2128,6 +3278,7 @@ Editor.Panel.extend({
 				}
 			}
 
+			editorState.timelineData = normalizeTimelineData(editorState.timelineData, Path.basename(filePath, '.json'));
 			const content = JSON.stringify(editorState.timelineData, null, 2);
 			ensureDirectory(filePath);
 			Fs.writeFileSync(filePath, content, 'utf8');
@@ -2146,6 +3297,20 @@ Editor.Panel.extend({
 	},
 
 	// 工具方法
+	captureEditHistoryOnce(input) {
+		if (!input || !editorState.timelineData || input.getAttribute('data-history-captured') === 'true') {
+			return;
+		}
+		this.pushHistory();
+		input.setAttribute('data-history-captured', 'true');
+	},
+
+	releaseEditHistory(input) {
+		if (input) {
+			input.removeAttribute('data-history-captured');
+		}
+	},
+
 	markDirty() {
 		editorState.isDirty = true;
 	},
@@ -2205,8 +3370,11 @@ Editor.Panel.extend({
 		}
 
 		// 恢复快照（深拷贝）
-		editorState.timelineData = JSON.parse(JSON.stringify(editorState.history[editorState.historyIndex]));
+		editorState.timelineData = normalizeTimelineData(cloneData(editorState.history[editorState.historyIndex]), editorState.timelineData && editorState.timelineData.name);
 		editorState.isDirty = true;
+		editorState.selectedTrack = null;
+		editorState.selectedClip = null;
+		editorState.selectedClips = [];
 
 		// 更新界面
 		this.renderTimeline();
@@ -2220,10 +3388,10 @@ Editor.Panel.extend({
 		const btnRedo = this.$el('#btnRedo');
 
 		if (btnUndo) {
-			btnUndo.disabled = !this.canUndo();
+			btnUndo.disabled = !editorState.isTimelineEditable || !this.canUndo();
 		}
 		if (btnRedo) {
-			btnRedo.disabled = !this.canRedo();
+			btnRedo.disabled = !editorState.isTimelineEditable || !this.canRedo();
 		}
 	},
 

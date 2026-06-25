@@ -14,10 +14,12 @@ Timeline -> UI Timeline 编辑器
 ## 界面布局
 
 ### 顶部工具栏
-- **新建**：创建新的 Timeline
-- **打开**：打开现有的 Timeline JSON 文件
-- **保存**：保存当前 Timeline
-- **另存为**：保存为新文件
+- **保存**：保存当前 Prefab 绑定的 Timeline
+- **安装运行时**：将 `TimelinePlayer.ts` 和 `TimelineComponent.ts` 安装到当前项目
+- **绑定组件**：在当前 Prefab 根节点挂载或更新 `TimelineComponent`，并绑定当前 Timeline JSON
+- **撤销/重做**：撤销或重做 Timeline 编辑操作
+
+> 当前版本按 Prefab 自动绑定 Timeline：打开 Prefab 后会优先读取 Prefab 上 TimelineComponent 的 `timelineAsset`，否则读取 `assets/Script/Timeline/configs/<PrefabName>.json`。手动新建、打开、另存为入口已禁用，避免编辑到错误文件。
 
 ### 左侧面板 - Timeline 属性
 - **名称**：Timeline 的名称
@@ -54,29 +56,40 @@ Timeline -> UI Timeline 编辑器
 
 ## 基本操作
 
-### 1. 创建新 Timeline
+### 1. 安装运行时
 
-1. 点击 **新建** 按钮
-2. 输入 Timeline 名称
-3. 选择保存路径（默认：`Timeline/configs/`）
-4. 点击 **创建**
+1. 点击顶部 **安装运行时**
+2. 插件会安装或更新：
+   - `assets/Script/Timeline/TimelinePlayer.ts`
+   - `assets/Script/Timeline/TimelineComponent.ts`
+3. 等待 Cocos Creator 编译完成
+4. 编译完成后 `TimelineComponent.ts.meta` 会生成，之后才能自动绑定组件
 
-### 2. 添加轨道
+### 2. 创建或绑定 Timeline
+
+1. 打开要编辑的 Prefab
+2. 如果未找到同名 JSON，点击遮罩里的 **快速创建配套 Timeline**
+3. Timeline 默认保存到 `assets/Script/Timeline/configs/<PrefabName>.json`
+4. 点击顶部 **绑定组件**，插件会在 Prefab 根节点挂载或更新 `TimelineComponent`，并将当前 JSON 赋给 `timelineAsset`
+5. 如需运行时自动播放，在左侧 Timeline 属性勾选 **自动播放** 后保存并重新点击 **绑定组件**
+
+### 3. 添加轨道
 
 1. 点击右侧面板的 **+** 按钮或中间的 **添加轨道** 按钮
-2. 选择轨道类型（Animation、Spine、Tween 等）
+2. 选择默认片段类型（Animation、Spine、Tween 等）
 3. 输入轨道名称
 4. 输入目标节点路径（相对路径，如 `child_node` 或 `.`）
 5. 点击 **添加**
 
-### 3. 添加片段
+### 4. 添加片段
 
 1. 在轨道列表中选中一个轨道（点击轨道）
 2. 点击右侧面板的片段类型按钮
 3. 片段会添加到当前播放头位置
-4. 在左侧面板编辑片段属性
+4. 同一轨道可以放不同类型片段，轨道只负责绑定目标节点
+5. 在左侧面板编辑片段属性
 
-### 4. 编辑片段
+### 5. 编辑片段
 
 #### 移动片段
 - 点击并拖拽片段到新位置
@@ -92,28 +105,33 @@ Timeline -> UI Timeline 编辑器
    - 持续时间
    - 其他特定属性
 
-### 5. 预览播放
+### 6. 预览播放
 
 1. 点击 **▶** 播放按钮
-2. 观察播放头移动和时间变化
+2. 播放头会推进，并在当前 Prefab 编辑态临时应用 Active、Tween、Animation、Spine、Code 片段
 3. 点击 **⏸** 暂停
-4. 点击 **■** 停止并重置到开始
+4. 点击 **■** 停止并重置到开始，同时恢复预览前的节点状态
 
-### 6. 时间轴导航
+> Audio 片段可编辑并可在运行时播放；编辑器内音频预览暂未启用。
+
+### 7. 时间轴导航
 
 - **缩放**：使用 +/- 按钮调整时间轴缩放（25% - 400%）
-- **跳转**：点击时间刻度尺跳转到指定时间
+- **跳转/拖动**：点击或拖动时间刻度尺跳转到指定时间
 - **滚动**：使用鼠标滚轮或滚动条浏览
+- **逐帧微调**：方向键移动播放头；选中片段时方向键移动片段，Shift 加速
 
-### 7. 保存文件
+### 8. 保存文件
 
 1. 点击 **保存** 按钮
-2. 首次保存会提示选择保存位置
-3. 建议保存到 `assets/Script/Timeline/configs/` 目录
+2. 保存当前 Prefab 绑定的 Timeline JSON
+3. 保存后 Cocos Creator 会刷新对应资源
 
-## 轨道类型说明
+## 轨道和片段类型说明
 
-### Animation 轨道
+轨道绑定一个目标节点路径，并提供一个默认片段类型；真正执行什么行为由片段的 `type` 决定。因此一个节点需要同时做 Tween 和 Spine 时，可以放在同一条目标节点轨道里，也可以按组织习惯拆成多条轨道。
+
+### Animation 片段
 控制 cc.Animation 组件播放。
 
 **片段属性**：
@@ -121,7 +139,7 @@ Timeline -> UI Timeline 编辑器
 - `speed`: 播放速度
 - `loop`: 是否循环
 
-### Spine 轨道
+### Spine 片段
 控制 sp.Skeleton 组件播放。
 
 **片段属性**：
@@ -130,7 +148,7 @@ Timeline -> UI Timeline 编辑器
 - `loop`: 是否循环
 - `trackIndex`: 轨道索引
 
-### Tween 轨道
+### Tween 片段
 创建补间动画。
 
 **片段属性**：
@@ -138,14 +156,14 @@ Timeline -> UI Timeline 编辑器
 - `from`: 起始值（可选）
 - `easing`: 缓动类型
 
-### Code 轨道
+### Code 片段
 触发代码回调。
 
 **片段属性**：
 - `callbackName`: 回调函数名称
 - `params`: 回调参数数组
 
-### Audio 轨道
+### Audio 片段
 播放音频。
 
 **片段属性**：
@@ -153,7 +171,7 @@ Timeline -> UI Timeline 编辑器
 - `volume`: 音量（0-1）
 - `loop`: 是否循环
 
-### Active 轨道
+### Active 片段
 控制节点激活状态。
 
 **片段属性**：
@@ -193,9 +211,9 @@ Timeline -> UI Timeline 编辑器
    - 名称：`card_open_105`
    - 时长：8.0 秒
 
-2. **添加 Spine 轨道**
+2. **添加节点轨道**
    - 名称：卡包动画
-   - 类型：Spine
+   - 默认片段类型：Spine
    - 目标：`spine_pack`
 
 3. **添加开包片段**
@@ -210,22 +228,26 @@ Timeline -> UI Timeline 编辑器
    - 时长：5.36s
    - animName：`idle_105`
 
-5. **添加 Tween 轨道**
+5. **在同一节点需要混合行为时直接添加不同片段**
+   - 同一轨道绑定一个目标节点，片段类型决定行为
+   - 例如 `spine_pack` 轨道可以同时放 Spine、Tween、Active 片段
+
+6. **添加 Tween 轨道**
    - 名称：卡牌飞入
-   - 类型：Tween
+   - 默认片段类型：Tween
    - 目标：`card_layer/card_1`
 
-6. **添加飞入片段**
+7. **添加飞入片段**
    - 开始：2.64s
    - 时长：0.45s
    - props：`{x: 0, y: 100, opacity: 255}`
    - easing：`sineOut`
 
-7. **预览播放**
+8. **预览播放**
    - 点击播放按钮查看效果
    - 调整时间和参数
 
-8. **保存**
+9. **保存**
    - 保存到 `Timeline/configs/card_open_105.json`
 
 ## 注意事项
@@ -241,12 +263,12 @@ Timeline -> UI Timeline 编辑器
    - 建议使用 0.1 秒的倍数
 
 3. **片段重叠**
-   - 同一轨道的片段可以重叠
-   - 重叠部分的行为取决于轨道类型
+	- 同一轨道的片段可以重叠
+	- 重叠部分的行为取决于片段类型和轨道顺序
 
 4. **保存位置**
-   - 建议保存到 `assets/Script/Timeline/configs/`
-   - 确保文件在 resources 目录下以便运行时加载
+   - 默认保存到 `assets/Script/Timeline/configs/`
+   - 运行时推荐通过 `TimelineComponent.timelineAsset` 直接引用 JSON
 
 5. **文件格式**
    - 保存为标准 JSON 格式

@@ -147,7 +147,8 @@ body {
 .btn-icon:disabled,
 .clip-type-btn:disabled,
 input:disabled,
-select:disabled {
+select:disabled,
+textarea:disabled {
 	opacity: 0.45;
 	cursor: not-allowed;
 }
@@ -282,7 +283,8 @@ select:disabled {
 
 .property-group input[type="text"],
 .property-group input[type="number"],
-.property-group select {
+.property-group select,
+.property-group textarea {
 	width: 100%;
 	padding: 6px 8px;
 	background: #3c3c3c;
@@ -294,13 +296,47 @@ select:disabled {
 
 .property-group input[type="text"]:focus,
 .property-group input[type="number"]:focus,
-.property-group select:focus {
+.property-group select:focus,
+.property-group textarea:focus {
 	outline: none;
 	border-color: #0e639c;
 }
 
+.property-group textarea {
+	min-height: 78px;
+	resize: vertical;
+	font-family: 'Courier New', monospace;
+	line-height: 1.4;
+}
+
+.property-group textarea.invalid {
+	border-color: #c93535;
+	box-shadow: 0 0 0 1px rgba(201, 53, 53, 0.4);
+}
+
 .property-group input[type="checkbox"] {
 	margin-right: 6px;
+}
+
+.property-actions {
+	display: flex;
+	gap: 8px;
+}
+
+.property-actions .btn {
+	flex: 1;
+	justify-content: center;
+}
+
+.clip-property-type {
+	margin: 0 0 12px;
+	padding: 4px 8px;
+	border: 1px solid #555;
+	border-radius: 3px;
+	color: #aaa;
+	font-size: 11px;
+	text-align: center;
+	background: #333;
 }
 
 .empty-state {
@@ -438,6 +474,10 @@ select:disabled {
 	opacity: 0.5;
 }
 
+.track.disabled {
+	opacity: 0.45;
+}
+
 .track.muted .clip {
 	background: repeating-linear-gradient(
 		45deg,
@@ -549,6 +589,11 @@ select:disabled {
 
 .clip.dragging {
 	opacity: 0.7;
+	z-index: 100;
+}
+
+.clip.resizing {
+	opacity: 0.8;
 	z-index: 100;
 }
 
@@ -694,6 +739,19 @@ select:disabled {
 	min-width: 0;
 }
 
+.track-list-actions {
+	display: flex;
+	gap: 4px;
+	align-items: center;
+	opacity: 0;
+	transition: opacity 0.2s;
+}
+
+.track-list-item:hover .track-list-actions {
+	opacity: 1;
+}
+
+.track-move-btn,
 .track-delete-btn {
 	padding: 2px 8px;
 	background: transparent;
@@ -704,17 +762,23 @@ select:disabled {
 	font-size: 16px;
 	line-height: 1;
 	transition: all 0.2s;
-	opacity: 0;
 }
 
-.track-list-item:hover .track-delete-btn {
-	opacity: 1;
+.track-move-btn:disabled {
+	opacity: 0.35;
+	cursor: not-allowed;
 }
 
+.track-move-btn:not(:disabled):hover,
 .track-delete-btn:hover {
 	background: #c93535;
 	border-color: #c93535;
 	color: #fff;
+}
+
+.track-move-btn:not(:disabled):hover {
+	background: #0e639c;
+	border-color: #1177bb;
 }
 
 .track-list-item:hover {

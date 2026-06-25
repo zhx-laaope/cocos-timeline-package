@@ -198,6 +198,35 @@ module.exports = {
 		});
 	},
 
+	callTimelineSceneScript(event, method, payload) {
+		if (!Editor.Scene || !Editor.Scene.callSceneScript) {
+			reply(event, null, {
+				ok: false,
+				warnings: ['当前 Creator 不支持 SceneScript 调用'],
+			});
+			return;
+		}
+
+		Editor.Scene.callSceneScript('ui-timeline-editor', method, payload || {}, (err, result) => {
+			if (err) {
+				reply(event, null, {
+					ok: false,
+					warnings: [err.message || String(err)],
+				});
+				return;
+			}
+			reply(event, null, result || { ok: true });
+		});
+	},
+
+	previewTimeline(event, payload) {
+		this.callTimelineSceneScript(event, 'preview-timeline', payload);
+	},
+
+	stopPreview(event) {
+		this.callTimelineSceneScript(event, 'stop-preview', {});
+	},
+
 	messages: {
 		'open'() {
 			this.open();
@@ -205,6 +234,14 @@ module.exports = {
 
 		'query-prefab-context'(event) {
 			this.queryPrefabContext(event);
+		},
+
+		'preview-timeline'(event, payload) {
+			this.previewTimeline(event, payload);
+		},
+
+		'stop-preview'(event) {
+			this.stopPreview(event);
 		}
 	}
 };

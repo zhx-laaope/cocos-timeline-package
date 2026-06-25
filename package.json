@@ -4,6 +4,9 @@
 	"description": "UI Timeline 可视化编辑器 - 用于编辑 UI 动画时间轴",
 	"author": "Timeline System",
 	"main": "main.js",
+	"scripts": {
+		"verify": "node scripts/verify.js"
+	},
 	"scene-script": "scene-script.js",
 	"main-menu": {
 		"Timeline/UI Timeline 编辑器": {
@@ -28,6 +31,16 @@
 		"open": {
 			"methods": [
 				"open"
+			]
+		},
+		"preview-timeline": {
+			"methods": [
+				"previewTimeline"
+			]
+		},
+		"stop-preview": {
+			"methods": [
+				"stopPreview"
 			]
 		}
 	}
