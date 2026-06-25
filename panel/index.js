@@ -25,9 +25,66 @@ const RUNTIME_TEMPLATES = [
 const TIMELINE_COMPONENT_SCRIPT_PATH = Path.join(TIMELINE_RUNTIME_FS, 'TimelineComponent.ts');
 const TIMELINE_COMPONENT_SCRIPT_UUID = '2c738156-8dbd-4360-92da-d98be89efcbd';
 const PREFAB_CONTEXT_POLL_INTERVAL = 1000;
+const RESOURCE_DURATION_POLL_INTERVAL = 2500;
 const TRACK_HEADER_WIDTH = 120;
 const PREFAB_NAME_CACHE = Object.create(null);
-const CLIP_TYPES = ['animation', 'spine', 'tween', 'code', 'audio', 'active'];
+const CLIP_TYPES = ['animation', 'spine', 'tween', 'code', 'audio'];
+const RESOURCE_DURATION_CLIP_TYPES = ['animation', 'spine', 'audio'];
+const TWEEN_ACTION_TYPES = [
+	'to',
+	'by',
+	'set',
+	'delay',
+	'call',
+	'sequence',
+	'then',
+	'parallel',
+	'spawn',
+	'repeat',
+	'repeatForever',
+	'reverseTime',
+	'show',
+	'hide',
+	'flipX',
+	'flipY',
+	'blink',
+	'bezierTo',
+	'bezierBy',
+	'removeSelf',
+];
+const TWEEN_EASING_OPTIONS = [
+	'linear',
+	'sineIn',
+	'sineOut',
+	'sineInOut',
+	'quadIn',
+	'quadOut',
+	'quadInOut',
+	'cubicIn',
+	'cubicOut',
+	'cubicInOut',
+	'quartIn',
+	'quartOut',
+	'quartInOut',
+	'quintIn',
+	'quintOut',
+	'quintInOut',
+	'expoIn',
+	'expoOut',
+	'expoInOut',
+	'circIn',
+	'circOut',
+	'circInOut',
+	'backIn',
+	'backOut',
+	'backInOut',
+	'bounceIn',
+	'bounceOut',
+	'bounceInOut',
+	'elasticIn',
+	'elasticOut',
+	'elasticInOut',
+];
 
 function isEditableEventTarget(target) {
 	let node = target;
@@ -111,6 +168,9 @@ function createDefaultEditorState(overrides) {
 		scenePreviewInFlight: false,
 		scenePreviewPending: null,
 		scenePreviewLastWarning: '',
+		resourceDurationInFlight: false,
+		resourceDurationPending: false,
+		resourceDurationLastWarning: '',
 		snapEnabled: true,
 		snapThreshold: 10, // 像素阈值
 		snapToClips: true,
@@ -155,6 +215,282 @@ function stringifyJsonValue(value, fallback) {
 	}
 }
 
+function formatTweenValueForInput(value) {
+	if (value === undefined) return '';
+	if (value === null) return 'null';
+	if (typeof value === 'object') return stringifyJsonValue(value, value);
+	return String(value);
+}
+
+function parseTweenValueFromInput(value) {
+	const text = String(value === undefined || value === null ? '' : value).trim();
+	if (text === '') return '';
+	if (text === 'true') return true;
+	if (text === 'false') return false;
+	if (text === 'null') return null;
+	const number = Number(text);
+	if (text !== '' && Number.isFinite(number)) return number;
+	if (/^[\[{"]/.test(text)) {
+		try {
+			return JSON.parse(text);
+		} catch (err) {
+			return text;
+		}
+	}
+	return text;
+}
+
+function parseTweenParamsInput(value) {
+	const text = String(value === undefined || value === null ? '' : value).trim();
+	if (!text) return [];
+	try {
+		const parsed = JSON.parse(text);
+		return Array.isArray(parsed) ? parsed : [parsed];
+	} catch (err) {
+		return text.split(',').map((item) => parseTweenValueFromInput(item));
+	}
+}
+
+function createVec2Value(x, y) {
+	return {
+		x: clampNumber(x, null, null, 0),
+		y: clampNumber(y, null, null, 0),
+	};
+}
+
+function normalizeVec2Value(value, fallback) {
+	const source = value && typeof value === 'object' ? value : {};
+	return createVec2Value(
+		source.x === undefined ? fallback.x : source.x,
+		source.y === undefined ? fallback.y : source.y
+	);
+}
+
+function isTweenContainerAction(type) {
+	return type === 'sequence'
+		|| type === 'then'
+		|| type === 'parallel'
+		|| type === 'spawn'
+		|| type === 'repeat'
+		|| type === 'repeatForever'
+		|| type === 'reverseTime';
+}
+
+function isTweenDurationAction(type) {
+	return type === 'to'
+		|| type === 'by'
+		|| type === 'delay'
+		|| type === 'blink'
+		|| type === 'bezierTo'
+		|| type === 'bezierBy'
+		|| type === 'repeatForever';
+}
+
+function createDefaultTweenActions() {
+	return [createDefaultTweenAction('to')];
+}
+
+function createDefaultTweenAction(type) {
+	const actionType = TWEEN_ACTION_TYPES.indexOf(type) >= 0 ? type : 'to';
+	if (actionType === 'to' || actionType === 'by') {
+		return {
+			type: actionType,
+			duration: 1,
+			props: { x: 0, y: 0 },
+			easing: 'linear',
+		};
+	}
+	if (actionType === 'set') {
+		return {
+			type: 'set',
+			props: { active: true },
+		};
+	}
+	if (actionType === 'delay') {
+		return {
+			type: 'delay',
+			duration: 0.5,
+		};
+	}
+	if (actionType === 'call') {
+		return {
+			type: 'call',
+			callbackName: '',
+			params: [],
+		};
+	}
+	if (actionType === 'sequence' || actionType === 'then' || actionType === 'parallel' || actionType === 'spawn' || actionType === 'repeat' || actionType === 'repeatForever' || actionType === 'reverseTime') {
+		const action = {
+			type: actionType,
+			actions: [createDefaultTweenAction('to')],
+		};
+		if (actionType === 'repeat') action.times = 2;
+		if (actionType === 'repeatForever') action.duration = 1;
+		return action;
+	}
+	if (actionType === 'blink') {
+		return {
+			type: 'blink',
+			duration: 1,
+			times: 3,
+		};
+	}
+	if (actionType === 'bezierTo' || actionType === 'bezierBy') {
+		return {
+			type: actionType,
+			duration: 1,
+			c1: { x: 0, y: 100 },
+			c2: { x: 100, y: 100 },
+			to: { x: 100, y: 0 },
+			easing: 'linear',
+		};
+	}
+	return {
+		type: actionType,
+	};
+}
+
+function asTweenActionArray(actions) {
+	if (Array.isArray(actions)) return actions;
+	if (actions && typeof actions === 'object') return [actions];
+	return [];
+}
+
+function getTweenActionChildren(action) {
+	if (!action || typeof action !== 'object') return [];
+	if (Array.isArray(action.actions)) return action.actions;
+	if (Array.isArray(action.sequence)) return action.sequence;
+	if (Array.isArray(action.parallel)) return action.parallel;
+	if (action.action && typeof action.action === 'object') return [action.action];
+	return [];
+}
+
+function normalizeTweenAction(action) {
+	const source = action && typeof action === 'object' ? action : {};
+	const sourceType = source.type || 'to';
+	const type = TWEEN_ACTION_TYPES.indexOf(sourceType) >= 0 ? sourceType : 'to';
+	const normalized = Object.assign(createDefaultTweenAction(type), source, { type });
+
+	if (isTweenDurationAction(type)) {
+		normalized.duration = clampNumber(normalized.duration, 0, null, 0);
+	}
+	if (type === 'to' || type === 'by' || type === 'set') {
+		normalized.props = normalized.props && typeof normalized.props === 'object' && !Array.isArray(normalized.props)
+			? normalized.props
+			: {};
+		if ((type === 'to' || type === 'by') && !normalized.easing) normalized.easing = 'linear';
+	}
+	if (type === 'call') {
+		normalized.callbackName = normalized.callbackName || normalized.name || '';
+		normalized.params = Array.isArray(normalized.params) ? normalized.params : [];
+		delete normalized.name;
+	}
+	if (type === 'repeat') {
+		normalized.times = Math.max(0, parseInt(normalized.times, 10) || 0);
+	}
+	if (type === 'blink') {
+		normalized.times = Math.max(1, parseInt(normalized.times, 10) || 1);
+	}
+	if (type === 'bezierTo' || type === 'bezierBy') {
+		normalized.c1 = normalizeVec2Value(normalized.c1 || normalized.control1, { x: 0, y: 100 });
+		normalized.c2 = normalizeVec2Value(normalized.c2 || normalized.control2, { x: 100, y: 100 });
+		normalized.to = normalizeVec2Value(normalized.to || normalized.end || normalized.position, { x: 100, y: 0 });
+		normalized.easing = normalized.easing || 'linear';
+		delete normalized.control1;
+		delete normalized.control2;
+		delete normalized.end;
+		delete normalized.position;
+	}
+	if (isTweenContainerAction(type)) {
+		normalized.actions = normalizeTweenActions(getTweenActionChildren(normalized));
+		delete normalized.sequence;
+		delete normalized.parallel;
+		delete normalized.action;
+	}
+	return normalized;
+}
+
+function normalizeTweenActions(actions) {
+	const list = asTweenActionArray(actions);
+	if (list.length === 0) return createDefaultTweenActions();
+	return list.map((action) => normalizeTweenAction(action));
+}
+
+function convertLegacyTweenActions(source) {
+	const props = source && source.props && typeof source.props === 'object' ? source.props : null;
+	if (!props || Object.keys(props).length === 0) return createDefaultTweenActions();
+	return [{
+		type: source.mode === 'by' ? 'by' : 'to',
+		duration: clampNumber(source.duration, 0.01, null, 1),
+		props,
+		easing: source.easing || 'linear',
+	}];
+}
+
+function getTweenActionDuration(action, fallbackDuration) {
+	if (!action || typeof action !== 'object') return 0;
+	const type = action.type || 'to';
+	const duration = clampNumber(action.duration, 0, null, 0);
+
+	if (type === 'sequence' || type === 'then') {
+		return getTweenActionsDuration(getTweenActionChildren(action), fallbackDuration);
+	}
+	if (type === 'parallel' || type === 'spawn') {
+		return getTweenActionChildren(action).reduce((max, child) => {
+			return Math.max(max, getTweenActionDuration(child, fallbackDuration));
+		}, 0);
+	}
+	if (type === 'repeat') {
+		const childDuration = getTweenActionsDuration(getTweenActionChildren(action), fallbackDuration);
+		const times = Math.max(0, parseInt(action.times, 10) || 0);
+		return childDuration * times;
+	}
+	if (type === 'repeatForever') {
+		return duration || clampNumber(fallbackDuration, 0, null, 0);
+	}
+	if (type === 'reverseTime') {
+		return getTweenActionsDuration(getTweenActionChildren(action), fallbackDuration);
+	}
+	if (type === 'delay' || type === 'to' || type === 'by' || type === 'blink' || type === 'bezierTo' || type === 'bezierBy') {
+		return duration;
+	}
+	return 0;
+}
+
+function getTweenActionsDuration(actions, fallbackDuration) {
+	return asTweenActionArray(actions).reduce((total, action) => {
+		return total + getTweenActionDuration(action, fallbackDuration);
+	}, 0);
+}
+
+function isTweenActionClip(clip) {
+	return !!(clip && (Array.isArray(clip.actions) || (clip.actions && typeof clip.actions === 'object')));
+}
+
+function syncTweenClipDuration(clip) {
+	if (!clip) return 0;
+	clip.actions = normalizeTweenActions(clip.actions);
+	const duration = roundDuration(getTweenActionsDuration(clip.actions, clip.duration));
+	if (duration > 0) {
+		clip.duration = duration;
+	}
+	return duration;
+}
+
+function roundDuration(value) {
+	const number = Number(value);
+	if (!Number.isFinite(number) || number <= 0) return 0;
+	return Math.max(0.01, Math.round(number * 1000) / 1000);
+}
+
+function isResourceDurationClipType(type) {
+	return RESOURCE_DURATION_CLIP_TYPES.indexOf(type) >= 0;
+}
+
+function isClipDurationEditable(type, clip) {
+	return !isResourceDurationClipType(type) && type !== 'tween';
+}
+
 function createDefaultTimeline(name) {
 	return {
 		name: name || 'new_timeline',
@@ -190,9 +526,8 @@ function createDefaultClip(type, start) {
 			clip.trackIndex = 0;
 			break;
 		case 'tween':
-			clip.props = { x: 0, y: 0 };
-			clip.from = null;
-			clip.easing = 'linear';
+			clip.actions = createDefaultTweenActions();
+			syncTweenClipDuration(clip);
 			break;
 		case 'code':
 			clip.callbackName = 'callback';
@@ -206,6 +541,10 @@ function createDefaultClip(type, start) {
 		case 'active':
 			clip.active = true;
 			break;
+	}
+
+	if (isResourceDurationClipType(clip.type)) {
+		clip.durationLocked = true;
 	}
 
 	return clip;
@@ -226,12 +565,25 @@ function normalizeClip(rawClip, trackType, index) {
 	clip.start = clampNumber(clip.start, 0, null, 0);
 	clip.duration = clampNumber(clip.duration, 0.01, null, 1);
 	clip.enabled = clip.enabled !== false;
+	if (isResourceDurationClipType(type)) {
+		clip.durationLocked = true;
+	}
 
 	if (type === 'audio') {
 		clip.volume = clampNumber(clip.volume, 0, 1, 1);
 	}
 	if (type === 'spine') {
 		clip.trackIndex = Math.max(0, parseInt(clip.trackIndex, 10) || 0);
+	}
+	if (type === 'tween') {
+		clip.actions = normalizeTweenActions(source.actions === undefined
+			? convertLegacyTweenActions(source)
+			: source.actions);
+		delete clip.props;
+		delete clip.from;
+		delete clip.easing;
+		delete clip.mode;
+		syncTweenClipDuration(clip);
 	}
 
 	return clip;
@@ -769,6 +1121,7 @@ Editor.Panel.extend({
 		this.createEmptyTimeline();
 		this.setTimelineEditable(false, '请打开 Prefab 后编辑 Timeline', 'Timeline 会自动绑定到当前 Prefab');
 		this.startPrefabContextWatcher();
+		this.startResourceDurationWatcher();
 	},
 
 	initializeEditor() {
@@ -780,6 +1133,7 @@ Editor.Panel.extend({
 
 	close() {
 		this.stopPrefabContextWatcher();
+		this.stopResourceDurationWatcher();
 		this.stopPlayback();
 		this.stopScenePreview();
 		if (editorState.statusTimer) {
@@ -902,6 +1256,120 @@ Editor.Panel.extend({
 			clearInterval(this.prefabContextTimer);
 			this.prefabContextTimer = null;
 		}
+	},
+
+	startResourceDurationWatcher() {
+		this.stopResourceDurationWatcher();
+		this.resourceDurationTimer = setInterval(() => {
+			this.syncResourceClipDurations({ silent: true });
+		}, RESOURCE_DURATION_POLL_INTERVAL);
+	},
+
+	stopResourceDurationWatcher() {
+		if (this.resourceDurationTimer) {
+			clearInterval(this.resourceDurationTimer);
+			this.resourceDurationTimer = null;
+		}
+	},
+
+	hasResourceDurationClips() {
+		const timeline = editorState.timelineData;
+		if (!timeline || !Array.isArray(timeline.tracks)) return false;
+		return timeline.tracks.some((track) => {
+			return track && Array.isArray(track.clips) && track.clips.some((clip) => {
+				return isResourceDurationClipType(getClipType(track, clip));
+			});
+		});
+	},
+
+	syncResourceClipDurations(options = {}) {
+		if (!editorState.isTimelineEditable || !editorState.timelineData || !this.hasResourceDurationClips()) {
+			return;
+		}
+
+		if (editorState.resourceDurationInFlight) {
+			editorState.resourceDurationPending = true;
+			return;
+		}
+
+		editorState.resourceDurationInFlight = true;
+		editorState.resourceDurationPending = false;
+		this.callTimelineSceneScript('query-clip-durations', {
+			timelineData: editorState.timelineData,
+		}, (err, result) => {
+			editorState.resourceDurationInFlight = false;
+
+			if (err) {
+				this.reportResourceDurationWarning(err.message || String(err), options);
+			} else if (result && result.ok === false) {
+				this.reportResourceDurationWarning((result.warnings && result.warnings[0]) || '资源时长同步失败', options);
+			} else {
+				this.applyResourceClipDurations(result || {}, options);
+			}
+
+			if (editorState.resourceDurationPending) {
+				editorState.resourceDurationPending = false;
+				this.syncResourceClipDurations(options);
+			}
+		});
+	},
+
+	reportResourceDurationWarning(message, options = {}) {
+		if (!message || options.silent || message === editorState.resourceDurationLastWarning) return;
+		editorState.resourceDurationLastWarning = message;
+		this.setStatus('资源时长提示: ' + message, 'error', 2000);
+	},
+
+	applyResourceClipDurations(result, options = {}) {
+		if (!editorState.timelineData || !Array.isArray(result.clips)) return;
+
+		let changed = false;
+		let maxEnd = 0;
+		const clipsByKey = Object.create(null);
+		result.clips.forEach((item) => {
+			if (!item) return;
+			clipsByKey[item.trackIndex + ':' + item.clipIndex] = item;
+		});
+
+		editorState.timelineData.tracks.forEach((track, trackIndex) => {
+			if (!track || !Array.isArray(track.clips)) return;
+			track.clips.forEach((clip, clipIndex) => {
+				const type = getClipType(track, clip);
+				if (!isResourceDurationClipType(type)) {
+					maxEnd = Math.max(maxEnd, (Number(clip.start) || 0) + (Number(clip.duration) || 0));
+					return;
+				}
+
+				clip.durationLocked = true;
+				const item = clipsByKey[trackIndex + ':' + clipIndex];
+				if (item && item.source) {
+					clip.durationSource = item.source;
+				}
+				const duration = item ? roundDuration(item.duration) : 0;
+				if (duration > 0 && Math.abs((Number(clip.duration) || 0) - duration) > 0.0005) {
+					clip.duration = duration;
+					changed = true;
+				}
+				maxEnd = Math.max(maxEnd, (Number(clip.start) || 0) + (Number(clip.duration) || 0));
+			});
+		});
+
+		if (maxEnd > (Number(editorState.timelineData.duration) || 0)) {
+			editorState.timelineData.duration = Math.ceil(maxEnd * 100) / 100;
+			changed = true;
+		}
+
+		if (result.warnings && result.warnings.length > 0) {
+			this.reportResourceDurationWarning(result.warnings[0], options);
+		} else {
+			editorState.resourceDurationLastWarning = '';
+		}
+
+		if (!changed) return;
+		this.markDirty();
+		this.renderTimeline();
+		this.updateTimelineProperties();
+		this.updateClipProperties();
 	},
 
 	checkPrefabContext(force) {
@@ -1100,11 +1568,7 @@ Editor.Panel.extend({
 		const data = editorState.timelineData;
 
 		// 更新属性面板
-		this.$el('#timelineName').value = data.name || '';
-		this.$el('#timelineDuration').value = data.duration || 5.0;
-		this.$el('#timelineFrameRate').value = data.frameRate || 60;
-		this.$el('#timelineLoopMode').value = data.loopMode || 'none';
-		this.$el('#timelineAutoPlay').checked = data.autoPlay || false;
+		this.updateTimelineProperties();
 
 		// 更新文件信息
 		this.$el('#fileName').textContent = editorState.currentFile ? Path.basename(editorState.currentFile) : '未保存';
@@ -1116,6 +1580,18 @@ Editor.Panel.extend({
 		// 渲染时间轴
 		this.renderTimeline();
 		this.updateContextUI();
+	},
+
+	updateTimelineProperties() {
+		if (!editorState.timelineData) return;
+
+		const data = editorState.timelineData;
+		this.$el('#timelineName').value = data.name || '';
+		this.$el('#timelineDuration').value = data.duration || 5.0;
+		this.$el('#timelineFrameRate').value = data.frameRate || 60;
+		this.$el('#timelineLoopMode').value = data.loopMode || 'none';
+		this.$el('#timelineAutoPlay').checked = data.autoPlay || false;
+		this.$el('#totalTime').textContent = (data.duration || 5.0).toFixed(2);
 	},
 
 	updateContextUI() {
@@ -1197,6 +1673,9 @@ Editor.Panel.extend({
 			if (el) el.disabled = true;
 		});
 		this.updateUndoRedoButtons();
+		if (enabled) {
+			this.syncResourceClipDurations({ silent: true });
+		}
 	},
 
 	ensureTimelineEditable() {
@@ -1359,7 +1838,14 @@ Editor.Panel.extend({
 		clipEl.dataset.trackIndex = trackIndex;
 		clipEl.dataset.clipIndex = clipIndex;
 		const track = editorState.timelineData.tracks[trackIndex];
-		clipEl.dataset.type = getClipType(track, clip);
+		const clipType = getClipType(track, clip);
+		clipEl.dataset.type = clipType;
+		if (!isClipDurationEditable(clipType, clip)) {
+			clipEl.classList.add('fixed-duration');
+			clipEl.title = clipType === 'tween' && isTweenActionClip(clip)
+				? '时长由 cc.tween actions 自动计算'
+				: '时长由资源决定';
+		}
 
 		const pps = editorState.pixelsPerSecond;
 		const left = clip.start * pps;
@@ -1496,6 +1982,12 @@ Editor.Panel.extend({
 
 	// 使片段可调整时长
 	makeClipResizable(clipEl, trackIndex, clipIndex) {
+		const track = editorState.timelineData.tracks[trackIndex];
+		const clip = track && track.clips ? track.clips[clipIndex] : null;
+		if (!isClipDurationEditable(getClipType(track, clip), clip)) {
+			return;
+		}
+
 		const handles = clipEl.querySelectorAll('.clip-handle');
 		handles.forEach((handle) => {
 			let isResizing = false;
@@ -1967,6 +2459,9 @@ Editor.Panel.extend({
 		this.markDirty();
 		this.renderTimeline();
 		this.updateClipProperties();
+		if (isResourceDurationClipType(getClipType(track, clip))) {
+			this.syncResourceClipDurations();
+		}
 		this.setStatus('已添加片段', 'success');
 	},
 
@@ -2312,6 +2807,13 @@ Editor.Panel.extend({
 		this.markDirty();
 		this.renderTimeline();
 		this.updateClipProperties();
+		if (newClips.some(({ trackIndex, clipIndex }) => {
+			const pastedTrack = editorState.timelineData.tracks[trackIndex];
+			const pastedClip = pastedTrack && pastedTrack.clips ? pastedTrack.clips[clipIndex] : null;
+			return isResourceDurationClipType(getClipType(pastedTrack, pastedClip));
+		})) {
+			this.syncResourceClipDurations();
+		}
 		this.setStatus(`已粘贴 ${newClips.length} 个片段`, 'success', 1000);
 	},
 
@@ -2808,17 +3310,7 @@ Editor.Panel.extend({
 					{ label: '循环', prop: 'loop', type: 'checkbox', value: !!clip.loop },
 				];
 			case 'tween':
-				return [
-					{ label: '目标属性 props (JSON)', prop: 'props', type: 'json', value: stringifyJsonValue(clip.props, {}) },
-					{ label: '起始属性 from (JSON 或 null)', prop: 'from', type: 'json', value: stringifyJsonValue(clip.from, null) },
-					{
-						label: '缓动',
-						prop: 'easing',
-						type: 'select',
-						value: clip.easing || 'linear',
-						options: ['linear', 'sineIn', 'sineOut', 'sineInOut', 'quadIn', 'quadOut', 'quadInOut', 'cubicIn', 'cubicOut', 'cubicInOut', 'backOut', 'bounceOut'],
-					},
-				];
+				return [];
 			case 'code':
 				return [
 					{ label: '回调名称', prop: 'callbackName', type: 'text', value: clip.callbackName || '' },
@@ -2842,14 +3334,18 @@ Editor.Panel.extend({
 	renderClipPropertyField(field) {
 		const label = escapeHtml(field.label);
 		const prop = escapeHtml(field.prop);
+		const hint = field.hint ? `<div class="property-hint">${escapeHtml(field.hint)}</div>` : '';
+		const disabledAttr = field.disabled ? ' disabled' : '';
+		const readonlyAttr = field.readonly ? ' readonly data-readonly="true"' : '';
 
 		if (field.type === 'checkbox') {
 			return `
 				<div class="property-group">
 					<label>
-						<input type="checkbox" data-prop="${prop}" ${field.value ? 'checked' : ''}>
+						<input type="checkbox" data-prop="${prop}" ${field.value ? 'checked' : ''}${disabledAttr}>
 						${label}
 					</label>
+					${hint}
 				</div>
 			`;
 		}
@@ -2858,7 +3354,8 @@ Editor.Panel.extend({
 			return `
 				<div class="property-group">
 					<label>${label}</label>
-					<textarea data-prop="${prop}" data-json="true" spellcheck="false">${escapeHtml(field.value)}</textarea>
+					<textarea data-prop="${prop}" data-json="true" spellcheck="false"${readonlyAttr}${disabledAttr}>${escapeHtml(field.value)}</textarea>
+					${hint}
 				</div>
 			`;
 		}
@@ -2871,7 +3368,8 @@ Editor.Panel.extend({
 			return `
 				<div class="property-group">
 					<label>${label}</label>
-					<select data-prop="${prop}">${options}</select>
+					<select data-prop="${prop}"${disabledAttr}>${options}</select>
+					${hint}
 				</div>
 			`;
 		}
@@ -2884,20 +3382,378 @@ Editor.Panel.extend({
 		if (field.step !== undefined) attrs.push(`step="${escapeHtml(field.step)}"`);
 		if (field.min !== undefined) attrs.push(`min="${escapeHtml(field.min)}"`);
 		if (field.max !== undefined) attrs.push(`max="${escapeHtml(field.max)}"`);
+		if (field.readonly) attrs.push('readonly', 'data-readonly="true"');
+		if (field.disabled) attrs.push('disabled');
 
 		return `
 			<div class="property-group">
 				<label>${label}</label>
 				<input ${attrs.join(' ')}>
+				${hint}
 			</div>
 		`;
 	},
 
+	renderTweenTypeOptions(value) {
+		return TWEEN_ACTION_TYPES.map((type) => {
+			const escaped = escapeHtml(type);
+			return `<option value="${escaped}" ${type === value ? 'selected' : ''}>${escaped}</option>`;
+		}).join('');
+	},
+
+	renderTweenEasingOptions(value) {
+		return TWEEN_EASING_OPTIONS.map((type) => {
+			const escaped = escapeHtml(type);
+			return `<option value="${escaped}" ${type === value ? 'selected' : ''}>${escaped}</option>`;
+		}).join('');
+	},
+
+	renderTweenDurationField(action, path) {
+		if (!isTweenDurationAction(action.type)) return '';
+		return `
+			<label class="tween-field">
+				<span>时长</span>
+				<input type="number" step="0.01" min="0" value="${escapeHtml(action.duration || 0)}" data-tween-control="field" data-tween-field="duration" data-tween-path="${escapeHtml(path)}">
+			</label>
+		`;
+	},
+
+	renderTweenEasingField(action, path) {
+		if (['to', 'by', 'bezierTo', 'bezierBy'].indexOf(action.type) < 0) return '';
+		return `
+			<label class="tween-field">
+				<span>缓动</span>
+				<select data-tween-control="field" data-tween-field="easing" data-tween-path="${escapeHtml(path)}">
+					${this.renderTweenEasingOptions(action.easing || 'linear')}
+				</select>
+			</label>
+		`;
+	},
+
+	renderTweenPropsEditor(action, path) {
+		if (['to', 'by', 'set'].indexOf(action.type) < 0) return '';
+		const props = action.props && typeof action.props === 'object' ? action.props : {};
+		const rows = Object.keys(props).map((prop) => {
+			return `
+				<div class="tween-prop-row">
+					<input type="text" value="${escapeHtml(prop)}" data-tween-control="prop-key" data-tween-path="${escapeHtml(path)}" data-tween-prop="${escapeHtml(prop)}" title="属性名">
+					<input type="text" value="${escapeHtml(formatTweenValueForInput(props[prop]))}" data-tween-control="prop-value" data-tween-path="${escapeHtml(path)}" data-tween-prop="${escapeHtml(prop)}" title="属性值，支持数字、布尔和 JSON">
+					<button class="btn-icon" data-tween-command="remove-prop" data-tween-path="${escapeHtml(path)}" data-tween-prop="${escapeHtml(prop)}" title="删除属性">×</button>
+				</div>
+			`;
+		}).join('');
+		return `
+			<div class="tween-props">
+				<div class="tween-subtitle">属性</div>
+				${rows || '<div class="tween-empty">未设置属性</div>'}
+				<button class="btn tween-add-btn" data-tween-command="add-prop" data-tween-path="${escapeHtml(path)}">添加属性</button>
+			</div>
+		`;
+	},
+
+	renderTweenVec2Editor(action, path) {
+		if (['bezierTo', 'bezierBy'].indexOf(action.type) < 0) return '';
+		const groups = [
+			{ key: 'c1', label: '控制点 1' },
+			{ key: 'c2', label: '控制点 2' },
+			{ key: 'to', label: action.type === 'bezierBy' ? '位移' : '终点' },
+		];
+		return `
+			<div class="tween-vec-grid">
+				${groups.map((group) => {
+					const value = normalizeVec2Value(action[group.key], { x: 0, y: 0 });
+					return `
+						<div class="tween-vec-group">
+							<div class="tween-subtitle">${escapeHtml(group.label)}</div>
+							<label class="tween-field compact">
+								<span>X</span>
+								<input type="number" step="0.01" value="${escapeHtml(value.x)}" data-tween-control="vec2" data-tween-path="${escapeHtml(path)}" data-tween-vec="${escapeHtml(group.key)}" data-tween-axis="x">
+							</label>
+							<label class="tween-field compact">
+								<span>Y</span>
+								<input type="number" step="0.01" value="${escapeHtml(value.y)}" data-tween-control="vec2" data-tween-path="${escapeHtml(path)}" data-tween-vec="${escapeHtml(group.key)}" data-tween-axis="y">
+							</label>
+						</div>
+					`;
+				}).join('')}
+			</div>
+		`;
+	},
+
+	renderTweenCallEditor(action, path) {
+		if (action.type !== 'call') return '';
+		return `
+			<label class="tween-field">
+				<span>回调</span>
+				<input type="text" value="${escapeHtml(action.callbackName || '')}" data-tween-control="field" data-tween-field="callbackName" data-tween-path="${escapeHtml(path)}">
+			</label>
+			<label class="tween-field">
+				<span>参数</span>
+				<input type="text" value="${escapeHtml(stringifyJsonValue(action.params || [], []))}" data-tween-control="field" data-tween-field="params" data-tween-path="${escapeHtml(path)}">
+			</label>
+		`;
+	},
+
+	renderTweenRepeatEditor(action, path) {
+		if (action.type !== 'repeat' && action.type !== 'blink') return '';
+		return `
+			<label class="tween-field">
+				<span>次数</span>
+				<input type="number" step="1" min="${action.type === 'blink' ? '1' : '0'}" value="${escapeHtml(action.times || (action.type === 'blink' ? 1 : 0))}" data-tween-control="field" data-tween-field="times" data-tween-path="${escapeHtml(path)}">
+			</label>
+		`;
+	},
+
+	renderTweenActionChildren(action, path, depth) {
+		if (!isTweenContainerAction(action.type)) return '';
+		const children = normalizeTweenActions(getTweenActionChildren(action));
+		action.actions = children;
+		return `
+			<div class="tween-children">
+				<div class="tween-subtitle">子动作</div>
+				${children.map((child, index) => this.renderTweenActionCard(child, path + '.' + index, depth + 1)).join('')}
+				<div class="tween-add-row">
+					<select data-tween-new-type="child" data-tween-path="${escapeHtml(path)}">${this.renderTweenTypeOptions('to')}</select>
+					<button class="btn tween-add-btn" data-tween-command="add-child" data-tween-path="${escapeHtml(path)}">添加子动作</button>
+				</div>
+			</div>
+		`;
+	},
+
+	renderTweenActionCard(action, path, depth) {
+		const type = action.type || 'to';
+		return `
+			<div class="tween-action-card" data-tween-action-path="${escapeHtml(path)}" style="--depth:${depth || 0}">
+				<div class="tween-action-header">
+					<select data-tween-control="field" data-tween-field="type" data-tween-path="${escapeHtml(path)}">
+						${this.renderTweenTypeOptions(type)}
+					</select>
+					<div class="tween-action-buttons">
+						<button class="btn-icon" data-tween-command="move-up" data-tween-path="${escapeHtml(path)}" title="上移">↑</button>
+						<button class="btn-icon" data-tween-command="move-down" data-tween-path="${escapeHtml(path)}" title="下移">↓</button>
+						<button class="btn-icon" data-tween-command="delete" data-tween-path="${escapeHtml(path)}" title="删除">×</button>
+					</div>
+				</div>
+				<div class="tween-action-body">
+					${this.renderTweenDurationField(action, path)}
+					${this.renderTweenEasingField(action, path)}
+					${this.renderTweenRepeatEditor(action, path)}
+					${this.renderTweenCallEditor(action, path)}
+					${this.renderTweenPropsEditor(action, path)}
+					${this.renderTweenVec2Editor(action, path)}
+					${this.renderTweenActionChildren(action, path, depth || 0)}
+				</div>
+			</div>
+		`;
+	},
+
+	renderTweenActionEditor(clip) {
+		clip.actions = normalizeTweenActions(clip.actions);
+		syncTweenClipDuration(clip);
+		return `
+			<div class="tween-editor" data-tween-editor="true">
+				<div class="tween-editor-title">Tween 动作</div>
+				<div class="property-hint">按 cc.tween 链式动作顺序执行；时长由动作自动计算。</div>
+				${clip.actions.map((action, index) => this.renderTweenActionCard(action, String(index), 0)).join('')}
+				<div class="tween-add-row root">
+					<select data-tween-new-type="root">${this.renderTweenTypeOptions('to')}</select>
+					<button class="btn tween-add-btn" data-tween-command="add-root">添加动作</button>
+				</div>
+			</div>
+		`;
+	},
+
+	getTweenActionAtPath(clip, path) {
+		const indices = String(path || '').split('.').filter((part) => part !== '').map((part) => parseInt(part, 10));
+		let list = clip.actions;
+		let action = null;
+		for (let i = 0; i < indices.length; i++) {
+			if (!Array.isArray(list)) return null;
+			action = list[indices[i]];
+			if (!action) return null;
+			list = action.actions;
+		}
+		return action;
+	},
+
+	getTweenActionParentList(clip, path) {
+		const indices = String(path || '').split('.').filter((part) => part !== '').map((part) => parseInt(part, 10));
+		if (indices.length === 0) return clip.actions;
+		let list = clip.actions;
+		for (let i = 0; i < indices.length - 1; i++) {
+			const action = list && list[indices[i]];
+			if (!action) return null;
+			if (!Array.isArray(action.actions)) action.actions = [];
+			list = action.actions;
+		}
+		return list;
+	},
+
+	commitTweenActionChange(clip, options = {}) {
+		clip.actions = normalizeTweenActions(clip.actions);
+		delete clip.props;
+		delete clip.from;
+		delete clip.easing;
+		delete clip.mode;
+		syncTweenClipDuration(clip);
+		editorState.timelineData.duration = Math.max(
+			editorState.timelineData.duration,
+			Math.ceil((clip.start + clip.duration) * 100) / 100
+		);
+		this.markDirty();
+		this.renderTimeline();
+		this.updateTimelineProperties();
+		if (options.rerender) {
+			this.updateClipProperties();
+		} else {
+			const durationInput = this.$el('#clipProperties [data-prop="duration"]');
+			if (durationInput) durationInput.value = clip.duration || 0.01;
+		}
+		if (editorState.scenePreviewActive || editorState.isPlaying) {
+			this.previewTimelineAtCurrentTime({ playing: editorState.isPlaying });
+		}
+	},
+
+	applyTweenActionFieldInput(input, clip) {
+		if (!this.ensureTimelineEditable()) return;
+		this.captureEditHistoryOnce(input);
+		const path = input.getAttribute('data-tween-path') || '';
+		const action = this.getTweenActionAtPath(clip, path);
+		if (!action) return;
+
+		const control = input.getAttribute('data-tween-control');
+		let rerender = false;
+		if (control === 'field') {
+			const field = input.getAttribute('data-tween-field');
+			if (field === 'type') {
+				const parent = this.getTweenActionParentList(clip, path);
+				const index = parseInt(path.split('.').pop(), 10);
+				if (!parent || !parent[index]) return;
+				parent[index] = createDefaultTweenAction(input.value);
+				rerender = true;
+			} else if (field === 'duration') {
+				action.duration = clampNumber(input.value, 0, null, action.duration || 0);
+			} else if (field === 'easing') {
+				action.easing = input.value || 'linear';
+			} else if (field === 'callbackName') {
+				action.callbackName = input.value || '';
+			} else if (field === 'params') {
+				action.params = parseTweenParamsInput(input.value);
+			} else if (field === 'times') {
+				action.times = Math.max(action.type === 'blink' ? 1 : 0, parseInt(input.value, 10) || 0);
+			}
+		} else if (control === 'prop-key') {
+			const oldKey = input.getAttribute('data-tween-prop') || '';
+			const newKey = String(input.value || '').trim();
+			if (!newKey || oldKey === newKey) return;
+			action.props = action.props && typeof action.props === 'object' ? action.props : {};
+			action.props[newKey] = action.props[oldKey];
+			delete action.props[oldKey];
+			rerender = true;
+		} else if (control === 'prop-value') {
+			const prop = input.getAttribute('data-tween-prop') || '';
+			action.props = action.props && typeof action.props === 'object' ? action.props : {};
+			action.props[prop] = parseTweenValueFromInput(input.value);
+		} else if (control === 'vec2') {
+			const group = input.getAttribute('data-tween-vec');
+			const axis = input.getAttribute('data-tween-axis');
+			if (!group || (axis !== 'x' && axis !== 'y')) return;
+			action[group] = normalizeVec2Value(action[group], { x: 0, y: 0 });
+			action[group][axis] = clampNumber(input.value, null, null, action[group][axis]);
+		}
+
+		this.commitTweenActionChange(clip, { rerender });
+	},
+
+	handleTweenActionCommand(button, clip) {
+		if (!this.ensureTimelineEditable()) return;
+		this.pushHistory();
+		const command = button.getAttribute('data-tween-command');
+		const path = button.getAttribute('data-tween-path') || '';
+		let rerender = true;
+
+		if (command === 'add-root') {
+			const select = button.parentElement && button.parentElement.querySelector('[data-tween-new-type="root"]');
+			clip.actions.push(createDefaultTweenAction(select ? select.value : 'to'));
+		} else if (command === 'add-child') {
+			const action = this.getTweenActionAtPath(clip, path);
+			if (!action) return;
+			if (!Array.isArray(action.actions)) action.actions = [];
+			const select = button.parentElement && button.parentElement.querySelector('[data-tween-new-type="child"]');
+			action.actions.push(createDefaultTweenAction(select ? select.value : 'to'));
+		} else if (command === 'delete') {
+			const parent = this.getTweenActionParentList(clip, path);
+			const index = parseInt(path.split('.').pop(), 10);
+			if (!parent || !parent[index]) return;
+			parent.splice(index, 1);
+			if (parent === clip.actions && parent.length === 0) parent.push(createDefaultTweenAction('to'));
+		} else if (command === 'move-up' || command === 'move-down') {
+			const parent = this.getTweenActionParentList(clip, path);
+			const index = parseInt(path.split('.').pop(), 10);
+			const targetIndex = command === 'move-up' ? index - 1 : index + 1;
+			if (!parent || !parent[index] || targetIndex < 0 || targetIndex >= parent.length) return;
+			const temp = parent[index];
+			parent[index] = parent[targetIndex];
+			parent[targetIndex] = temp;
+		} else if (command === 'add-prop') {
+			const action = this.getTweenActionAtPath(clip, path);
+			if (!action) return;
+			action.props = action.props && typeof action.props === 'object' ? action.props : {};
+			let prop = 'x';
+			let suffix = 1;
+			while (Object.prototype.hasOwnProperty.call(action.props, prop)) {
+				prop = 'prop' + suffix++;
+			}
+			action.props[prop] = 0;
+		} else if (command === 'remove-prop') {
+			const action = this.getTweenActionAtPath(clip, path);
+			const prop = button.getAttribute('data-tween-prop') || '';
+			if (!action || !action.props) return;
+			delete action.props[prop];
+		} else {
+			rerender = false;
+		}
+
+		this.commitTweenActionChange(clip, { rerender });
+	},
+
+	bindTweenActionEditor(panel, clip) {
+		const editor = panel.querySelector('[data-tween-editor]');
+		if (!editor) return;
+
+		editor.querySelectorAll('[data-tween-control]').forEach((input) => {
+			input.addEventListener('focus', () => this.captureEditHistoryOnce(input));
+			input.addEventListener('blur', () => this.releaseEditHistory(input));
+			const control = input.getAttribute('data-tween-control');
+			const field = input.getAttribute('data-tween-field');
+			const eventName = control === 'prop-key' || field === 'params'
+				? 'change'
+				: (input.tagName === 'SELECT' ? 'change' : 'input');
+			input.addEventListener(eventName, () => {
+				this.applyTweenActionFieldInput(input, clip);
+			});
+		});
+
+		editor.querySelectorAll('[data-tween-command]').forEach((button) => {
+			button.addEventListener('click', () => {
+				this.handleTweenActionCommand(button, clip);
+			});
+		});
+	},
+
 	applyClipPropertyInput(input, clip) {
 		if (!this.ensureTimelineEditable()) return;
+		if (input && input.getAttribute('data-readonly') === 'true') return;
 		this.captureEditHistoryOnce(input);
 
 		const prop = input.getAttribute('data-prop');
+		const currentTrack = editorState.selectedTrack !== null
+			? editorState.timelineData.tracks[editorState.selectedTrack]
+			: null;
+		const clipType = getClipType(currentTrack, clip);
+		if (prop === 'duration' && !isClipDurationEditable(clipType, clip)) {
+			return;
+		}
 		let value = input.value;
 
 		if (input.getAttribute('data-json') === 'true') {
@@ -2929,15 +3785,26 @@ Editor.Panel.extend({
 			value = Math.max(0, parseInt(value, 10) || 0);
 		} else if (prop === 'speed') {
 			value = clampNumber(value, 0, null, 1);
+		} else if (prop === 'actions' && clipType === 'tween') {
+			if (!Array.isArray(value) && (!value || typeof value !== 'object')) {
+				this.setStatus('actions 必须是对象或数组', 'error', 2000);
+				return;
+			}
 		}
 
 		clip[prop] = value;
+		if (prop === 'actions' && clipType === 'tween') {
+			syncTweenClipDuration(clip);
+		}
 		editorState.timelineData.duration = Math.max(
 			editorState.timelineData.duration,
 			Math.ceil((clip.start + clip.duration) * 100) / 100
 		);
 		this.markDirty();
 		this.renderTimeline();
+		if (isResourceDurationClipType(clipType) && ['clipName', 'animName', 'audioUrl'].indexOf(prop) >= 0) {
+			this.syncResourceClipDurations();
+		}
 	},
 
 	applyTrackPropertyInput(input, track) {
@@ -2962,6 +3829,9 @@ Editor.Panel.extend({
 		track[prop] = value;
 		this.markDirty();
 		this.renderTimeline();
+		if (prop === 'targetPath' || prop === 'type') {
+			this.syncResourceClipDurations();
+		}
 	},
 
 	renderSelectedTrackProperties(panel, track, trackIndex) {
@@ -3052,18 +3922,44 @@ Editor.Panel.extend({
 		const clip = track.clips[editorState.selectedClip];
 		const clipType = getClipType(track, clip);
 		clip.type = clipType;
+		if (clipType === 'tween') {
+			clip.actions = normalizeTweenActions(clip.actions);
+			delete clip.props;
+			delete clip.from;
+			delete clip.easing;
+			delete clip.mode;
+			syncTweenClipDuration(clip);
+		}
+		const tweenActionClip = clipType === 'tween';
+		const durationField = isClipDurationEditable(clipType, clip)
+			? { label: '持续时间（秒）', prop: 'duration', type: 'number', step: '0.01', min: '0.01', value: clip.duration || 0.01 }
+			: {
+				label: tweenActionClip ? '动作总时长（秒）' : '资源时长（秒）',
+				prop: 'duration',
+				type: 'number',
+				step: '0.001',
+				min: '0.01',
+				value: clip.duration || 0.01,
+				readonly: true,
+				hint: tweenActionClip
+					? '由 cc.tween actions 自动计算，修改 actions 后会同步'
+					: clip.durationSource
+					? '由 ' + clip.durationSource + ' 决定，修改资源后会自动同步'
+					: '由资源决定，修改资源后会自动同步',
+			};
 
 		const commonFields = [
 			{ label: '片段名称', prop: 'name', type: 'text', value: clip.name || '' },
 			{ label: '启用', prop: 'enabled', type: 'checkbox', value: clip.enabled !== false },
 			{ label: '开始时间（秒）', prop: 'start', type: 'number', step: '0.01', min: '0', value: clip.start },
-			{ label: '持续时间（秒）', prop: 'duration', type: 'number', step: '0.01', min: '0.01', value: clip.duration || 0.01 },
+			durationField,
 		];
 		const fields = commonFields.concat(this.getClipSpecificFields(clipType, clip));
 
 		panel.innerHTML = `
 			<div class="clip-property-type">${escapeHtml(clipType.toUpperCase())}</div>
 			${fields.map((field) => this.renderClipPropertyField(field)).join('')}
+			${clipType === 'tween' ? this.renderTweenActionEditor(clip) : ''}
 			<div class="property-group property-actions">
 				<button id="btnCopyClip" class="btn">复制</button>
 				<button id="btnDeleteClip" class="btn btn-danger">删除</button>
@@ -3078,7 +3974,7 @@ Editor.Panel.extend({
 			this.onDeleteClip(editorState.selectedTrack, editorState.selectedClip);
 		});
 
-		panel.querySelectorAll('input, select, textarea').forEach((input) => {
+		panel.querySelectorAll('input[data-prop], select[data-prop], textarea[data-prop]').forEach((input) => {
 			input.addEventListener('focus', () => this.captureEditHistoryOnce(input));
 			input.addEventListener('blur', () => this.releaseEditHistory(input));
 			const eventName = input.getAttribute('data-json') === 'true' || input.type === 'checkbox' || input.tagName === 'SELECT'
@@ -3088,6 +3984,7 @@ Editor.Panel.extend({
 				this.applyClipPropertyInput(input, clip);
 			});
 		});
+		this.bindTweenActionEditor(panel, clip);
 	},
 
 	// 播放控制

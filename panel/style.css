@@ -314,6 +314,19 @@ textarea:disabled {
 	box-shadow: 0 0 0 1px rgba(201, 53, 53, 0.4);
 }
 
+.property-group input[readonly],
+.property-group textarea[readonly] {
+	opacity: 0.75;
+	cursor: default;
+}
+
+.property-hint {
+	margin-top: 4px;
+	color: #888;
+	font-size: 11px;
+	line-height: 1.4;
+}
+
 .property-group input[type="checkbox"] {
 	margin-right: 6px;
 }
@@ -326,6 +339,151 @@ textarea:disabled {
 .property-actions .btn {
 	flex: 1;
 	justify-content: center;
+}
+
+.tween-editor {
+	margin: 4px 0 16px;
+	border-top: 1px solid #3e3e3e;
+	padding-top: 12px;
+}
+
+.tween-editor-title {
+	margin-bottom: 4px;
+	color: #fff;
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.tween-action-card {
+	margin: 10px 0 10px calc(var(--depth, 0) * 10px);
+	padding: 8px;
+	border: 1px solid #444;
+	border-radius: 4px;
+	background: #2f2f2f;
+}
+
+.tween-action-header,
+.tween-add-row,
+.tween-prop-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.tween-action-header select,
+.tween-add-row select {
+	flex: 1;
+	min-width: 0;
+}
+
+.tween-action-buttons {
+	display: flex;
+	gap: 4px;
+}
+
+.tween-action-buttons .btn-icon,
+.tween-prop-row .btn-icon {
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.tween-action-body {
+	margin-top: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.tween-field {
+	display: grid;
+	grid-template-columns: 58px minmax(0, 1fr);
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	color: #bbb;
+	font-size: 11px;
+}
+
+.tween-field.compact {
+	grid-template-columns: 16px minmax(0, 1fr);
+}
+
+.tween-field span {
+	white-space: nowrap;
+}
+
+.tween-field input,
+.tween-field select,
+.tween-prop-row input,
+.tween-add-row select {
+	width: 100%;
+	min-width: 0;
+	padding: 5px 6px;
+	background: #3c3c3c;
+	border: 1px solid #555;
+	border-radius: 3px;
+	color: #ccc;
+	font-size: 12px;
+}
+
+.tween-field input:focus,
+.tween-field select:focus,
+.tween-prop-row input:focus,
+.tween-add-row select:focus {
+	outline: none;
+	border-color: #0e639c;
+}
+
+.tween-subtitle {
+	margin: 2px 0 6px;
+	color: #999;
+	font-size: 11px;
+}
+
+.tween-props,
+.tween-children {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.tween-prop-row {
+	display: grid;
+	grid-template-columns: minmax(52px, 0.55fr) minmax(70px, 1fr) 28px;
+}
+
+.tween-vec-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 8px;
+}
+
+.tween-vec-group {
+	padding: 6px;
+	border: 1px solid #3f3f3f;
+	border-radius: 3px;
+	background: #292929;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.tween-add-row.root {
+	margin-top: 10px;
+}
+
+.tween-add-btn {
+	justify-content: center;
+	white-space: nowrap;
+}
+
+.tween-empty {
+	color: #777;
+	font-size: 11px;
 }
 
 .clip-property-type {
@@ -595,6 +753,25 @@ textarea:disabled {
 .clip.resizing {
 	opacity: 0.8;
 	z-index: 100;
+}
+
+.clip.fixed-duration {
+	cursor: grab;
+}
+
+.clip.fixed-duration .clip-handle {
+	display: none;
+}
+
+.clip.fixed-duration::after {
+	content: 'AUTO';
+	position: absolute;
+	right: 6px;
+	bottom: 3px;
+	color: rgba(255, 255, 255, 0.58);
+	font-size: 8px;
+	font-family: 'Courier New', monospace;
+	letter-spacing: 0;
 }
 
 .clip-name {

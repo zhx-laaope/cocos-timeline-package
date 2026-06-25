@@ -227,6 +227,10 @@ module.exports = {
 		this.callTimelineSceneScript(event, 'stop-preview', {});
 	},
 
+	queryClipDurations(event, payload) {
+		this.callTimelineSceneScript(event, 'query-clip-durations', payload);
+	},
+
 	messages: {
 		'open'() {
 			this.open();
@@ -242,6 +246,10 @@ module.exports = {
 
 		'stop-preview'(event) {
 			this.stopPreview(event);
+		},
+
+		'query-clip-durations'(event, payload) {
+			this.queryClipDurations(event, payload);
 		}
 	}
 };

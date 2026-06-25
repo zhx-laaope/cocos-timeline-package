@@ -46,13 +46,12 @@ Timeline -> UI Timeline 编辑器
 
 ### 右侧面板
 - **轨道列表**：显示所有轨道，点击选中
-- **添加片段**：6 种片段类型按钮
+- **添加片段**：5 种片段类型按钮
   - 🎬 Animation
   - 🦴 Spine
   - 📈 Tween
   - 💻 Code
   - 🔊 Audio
-  - 👁 Active
 
 ## 基本操作
 
@@ -96,19 +95,20 @@ Timeline -> UI Timeline 编辑器
 
 #### 调整时长
 - 拖拽片段左右两侧的手柄
+- Animation、Spine、Audio 片段时长由资源决定，不能拖拽改时长
 
 #### 编辑属性
 1. 点击选中片段
 2. 在左侧面板 **选中片段属性** 区域编辑：
    - 片段名称
    - 开始时间
-   - 持续时间
+   - 持续时间（Code 可编辑；Tween、Animation、Spine、Audio 会自动计算）
    - 其他特定属性
 
 ### 6. 预览播放
 
 1. 点击 **▶** 播放按钮
-2. 播放头会推进，并在当前 Prefab 编辑态临时应用 Active、Tween、Animation、Spine、Code 片段
+2. 播放头会推进，并在当前 Prefab 编辑态临时应用 Tween、Animation、Spine、Code 片段
 3. 点击 **⏸** 暂停
 4. 点击 **■** 停止并重置到开始，同时恢复预览前的节点状态
 
@@ -138,6 +138,7 @@ Timeline -> UI Timeline 编辑器
 - `clipName`: Animation 剪辑名称
 - `speed`: 播放速度
 - `loop`: 是否循环
+- `duration`: 从 `cc.AnimationClip.duration` 自动同步，不在工具内手动编辑
 
 ### Spine 片段
 控制 sp.Skeleton 组件播放。
@@ -147,14 +148,27 @@ Timeline -> UI Timeline 编辑器
 - `speed`: 播放速度
 - `loop`: 是否循环
 - `trackIndex`: 轨道索引
+- `duration`: 从 Spine 动画时长自动同步，不在工具内手动编辑
 
 ### Tween 片段
 创建补间动画。
 
 **片段属性**：
-- `props`: 目标属性（如 `{x: 100, y: 200}`）
-- `from`: 起始值（可选）
-- `easing`: 缓动类型
+- `actions`: 对齐 `cc.tween` 链式动作的数据列表，右侧面板提供结构化编辑；支持 `to`、`by`、`set`、`delay`、`call`、`sequence`、`then`、`parallel`、`spawn`、`repeat`、`repeatForever`、`reverseTime`、`show`、`hide`、`flipX`、`flipY`、`blink`、`bezierTo`、`bezierBy`、`removeSelf`
+- `duration`: 从 `actions` 自动计算；修改 `actions` 后会同步到片段长度
+- 旧格式 `props`、`from`、`easing` 会在加载/保存时迁移并移除，新片段只使用 `actions`
+- `removeSelf` 在 Timeline 预览和运行时中按 `active = false` 处理，避免采样时破坏节点层级
+
+**actions 示例**：
+```json
+[
+  { "type": "to", "duration": 0.45, "props": { "x": 0, "y": 100, "opacity": 255 }, "easing": "sineOut" },
+  { "type": "parallel", "actions": [
+    { "type": "by", "duration": 0.3, "props": { "scale": 0.2 } },
+    { "type": "set", "props": { "active": true } }
+  ] }
+]
+```
 
 ### Code 片段
 触发代码回调。
@@ -170,12 +184,10 @@ Timeline -> UI Timeline 编辑器
 - `audioUrl`: 音频资源路径
 - `volume`: 音量（0-1）
 - `loop`: 是否循环
+- `duration`: 从 `cc.AudioClip.duration` 自动同步，不在工具内手动编辑
 
-### Active 片段
-控制节点激活状态。
-
-**片段属性**：
-- `active`: true 或 false
+### Active 兼容
+Active 不再作为新增片段类型提供。历史 Timeline 中的 `type: "active"` 会继续兼容运行；新数据请使用 Tween actions 的 `set`、`show` 或 `hide`。
 
 ## 片段颜色说明
 
@@ -184,7 +196,6 @@ Timeline -> UI Timeline 编辑器
 - 🟢 **绿色** - Tween
 - 🟠 **橙色** - Code
 - 🔴 **红色** - Audio
-- 🟣 **深紫** - Active
 
 ## 快捷操作
 
@@ -195,7 +206,7 @@ Timeline -> UI Timeline 编辑器
 
 ### 编辑
 - **拖拽片段**：移动片段位置
-- **拖拽手柄**：调整片段时长
+- **拖拽手柄**：调整 Code 片段时长；Tween 从 actions 自动计算
 - **双击片段**：快速编辑（未来功能）
 
 ### 视图
@@ -219,18 +230,18 @@ Timeline -> UI Timeline 编辑器
 3. **添加开包片段**
    - 类型：Spine
    - 开始：0s
-   - 时长：2.64s
+   - 时长：由 `open_105` 动画自动同步
    - animName：`open_105`
 
 4. **添加待机片段**
    - 类型：Spine
    - 开始：2.64s
-   - 时长：5.36s
+   - 时长：由 `idle_105` 动画自动同步
    - animName：`idle_105`
 
 5. **在同一节点需要混合行为时直接添加不同片段**
    - 同一轨道绑定一个目标节点，片段类型决定行为
-   - 例如 `spine_pack` 轨道可以同时放 Spine、Tween、Active 片段
+   - 例如 `spine_pack` 轨道可以同时放 Spine 和 Tween 片段，节点显隐使用 Tween 的 `actions` 中的 `set/show/hide`
 
 6. **添加 Tween 轨道**
    - 名称：卡牌飞入
@@ -239,9 +250,8 @@ Timeline -> UI Timeline 编辑器
 
 7. **添加飞入片段**
    - 开始：2.64s
-   - 时长：0.45s
-   - props：`{x: 0, y: 100, opacity: 255}`
-   - easing：`sineOut`
+   - 时长：由 `actions` 自动计算
+   - actions：`[{ "type": "to", "duration": 0.45, "props": { "x": 0, "y": 100, "opacity": 255 }, "easing": "sineOut" }]`
 
 8. **预览播放**
    - 点击播放按钮查看效果

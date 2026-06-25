@@ -29,19 +29,25 @@ function verifyPackageJson() {
 
 function verifyPanelHelpers() {
 	const source = read('panel/index.js');
-	const start = source.indexOf('function createDefaultEditorState');
+	const start = source.indexOf('const CLIP_TYPES');
 	const end = source.indexOf('function ensureDirectory');
 	assert(start >= 0 && end > start, 'panel helper slice not found');
 
 	const sandbox = { exports: {}, console };
 	Vm.createContext(sandbox);
 	Vm.runInContext(source.slice(start, end) + `
+exports.CLIP_TYPES = CLIP_TYPES;
 exports.createDefaultClip = createDefaultClip;
 exports.normalizeTimelineData = normalizeTimelineData;
 exports.getClipType = getClipType;
+exports.isResourceDurationClipType = isResourceDurationClipType;
+exports.isClipDurationEditable = isClipDurationEditable;
+exports.getTweenActionsDuration = getTweenActionsDuration;
+exports.syncTweenClipDuration = syncTweenClipDuration;
+exports.normalizeTweenActions = normalizeTweenActions;
 `, sandbox);
 
-	const { createDefaultClip, normalizeTimelineData, getClipType } = sandbox.exports;
+	const { CLIP_TYPES, createDefaultClip, normalizeTimelineData, getClipType, isResourceDurationClipType, isClipDurationEditable, getTweenActionsDuration, syncTweenClipDuration } = sandbox.exports;
 	const timeline = normalizeTimelineData({
 		duration: 0,
 		frameRate: 'bad',
@@ -61,8 +67,30 @@ exports.getClipType = getClipType;
 	assert(timeline.tracks[1].clips[0].type === 'animation', 'track type fallback failed');
 
 	const tweenClip = createDefaultClip('tween', 1.25);
-	assert(tweenClip.type === 'tween' && tweenClip.start === 1.25 && !!tweenClip.props, 'default tween clip failed');
+	assert(tweenClip.type === 'tween' && tweenClip.start === 1.25 && Array.isArray(tweenClip.actions), 'default tween clip failed');
+	assert(!Object.prototype.hasOwnProperty.call(tweenClip, 'props') && !Object.prototype.hasOwnProperty.call(tweenClip, 'from'), 'default tween should not use legacy fields');
+	tweenClip.actions = [
+		{ type: 'to', duration: 0.25, props: { x: 10 } },
+		{ type: 'parallel', actions: [
+			{ type: 'to', duration: 0.5, props: { y: 20 } },
+			{ type: 'delay', duration: 0.75 },
+		] },
+	];
+	assert(getTweenActionsDuration(tweenClip.actions, 0) === 1, 'tween action duration calculation failed');
+	assert(syncTweenClipDuration(tweenClip) === 1 && tweenClip.duration === 1, 'tween duration sync failed');
+	const legacyTween = normalizeTimelineData({
+		tracks: [{ type: 'tween', clips: [{ type: 'tween', duration: 0.5, props: { x: 12 } }] }],
+	}, 'legacy').tracks[0].clips[0];
+	assert(Array.isArray(legacyTween.actions) && legacyTween.actions[0].props.x === 12 && legacyTween.duration === 0.5, 'legacy tween should migrate into actions');
+	assert(!Object.prototype.hasOwnProperty.call(legacyTween, 'props') && !Object.prototype.hasOwnProperty.call(legacyTween, 'from'), 'legacy tween fields should be removed after migration');
+	const animationClip = createDefaultClip('animation', 0);
+	assert(animationClip.durationLocked === true, 'resource clips should lock duration');
 	assert(getClipType({ type: 'spine' }, {}) === 'spine', 'clip type fallback failed');
+	assert(CLIP_TYPES.indexOf('active') === -1, 'active should not be a creatable clip type');
+	assert(isResourceDurationClipType('animation') && isResourceDurationClipType('spine') && isResourceDurationClipType('audio'), 'resource duration type detection failed');
+	assert(!isClipDurationEditable('animation', animationClip) && !isClipDurationEditable('tween', tweenClip) && !isClipDurationEditable('tween', { props: {} }), 'clip duration editability failed');
+	assert(source.indexOf('renderTweenActionEditor') !== -1, 'structured tween action editor missing');
+	assert(source.indexOf('旧格式 props') === -1, 'legacy tween property editor should be removed');
 	assert(source.indexOf('请选择 \' + type + \' 轨道后再添加该类型片段') === -1, 'track type should not block mixed clip types');
 	assert(source.indexOf('剪贴板片段类型与当前轨道类型不一致') === -1, 'paste should allow mixed clip types on a node track');
 	assert(source.indexOf('newClip.type = getClipType(track, newClip);') !== -1, 'paste should preserve pasted clip type');
@@ -165,6 +193,12 @@ function verifyScenePreview() {
 			return this.states[name] || null;
 		}
 
+		getClips() {
+			return Object.keys(this.states).map((name) => {
+				return Object.assign({ name }, this.states[name].clip);
+			});
+		}
+
 		play(name, startTime = 0) {
 			this.played.push({ name, startTime });
 			if (!this.states[name]) {
@@ -194,6 +228,11 @@ function verifyScenePreview() {
 			this.timeScale = 1;
 			this._skeleton = {
 				worldUpdated: 0,
+				data: {
+					findAnimation(name) {
+						return name === 'walk' ? { name, duration: 3 } : null;
+					},
+				},
 				updateWorldTransform() {
 					this.worldUpdated++;
 				},
@@ -228,12 +267,27 @@ function verifyScenePreview() {
 			return this._state;
 		}
 
+		findAnimation(name) {
+			return name === 'walk' ? { name, duration: 3 } : null;
+		}
+
 		clearTracks() {
 			this.cleared = true;
 		}
 
 		setToSetupPose() {
 			this.setup = true;
+		}
+	}
+
+	class CallbackComponent extends Component {
+		constructor() {
+			super();
+			this.calls = [];
+		}
+
+		onTweenCall(...args) {
+			this.calls.push(args);
 		}
 	}
 
@@ -285,10 +339,13 @@ function verifyScenePreview() {
 		}
 	}
 
+	class AudioClip {}
+
 	const root = new Node('Root');
 	const child = root.addChild(new Node('Child'));
 	const animation = child.addComponent(new Animation());
 	const skeleton = child.addComponent(new Skeleton());
+	const callbacks = child.addComponent(new CallbackComponent());
 
 	const sandbox = {
 		module: { exports: {} },
@@ -307,7 +364,13 @@ function verifyScenePreview() {
 			Color,
 			Component,
 			Animation,
+			AudioClip,
 			WrapMode: { Loop: 'loop', Normal: 'normal' },
+			loader: {
+				loadRes(url, type, callback) {
+					callback(null, { url, type, duration: 4.5 });
+				},
+			},
 			director: {
 				getScene() {
 					return { children: [root] };
@@ -337,7 +400,7 @@ function verifyScenePreview() {
 		playing: false,
 		timelineData: {
 			tracks: [
-				{ type: 'tween', targetPath: 'Child', clips: [{ type: 'tween', start: 0, duration: 1, props: { x: 100, opacity: 55, rotation: 90 } }] },
+				{ type: 'tween', targetPath: 'Child', clips: [{ type: 'tween', start: 0, duration: 1, actions: [{ type: 'to', duration: 1, props: { x: 100, opacity: 55, rotation: 90 } }] }] },
 				{ type: 'active', targetPath: 'Child', clips: [{ type: 'active', start: 0, duration: 0.25, active: false }] },
 			],
 		},
@@ -363,6 +426,222 @@ function verifyScenePreview() {
 	assert(child.x === 0 && child.opacity === 255 && child.angle === 0 && child.active === true, 'preview restore failed');
 
 	res = call('preview-timeline', {
+		time: 0.1,
+		playing: false,
+		timelineData: {
+			tracks: [
+				{ type: 'tween', targetPath: 'Child', clips: [{ type: 'tween', start: 0, duration: 1, actions: [{ type: 'set', props: { active: false } }] }] },
+			],
+		},
+	});
+	assert(res.ok && child.active === false, 'tween active prop did not apply');
+	call('stop-preview', {});
+	assert(child.active === true, 'tween active preview restore failed');
+
+	res = call('preview-timeline', {
+		time: 1.5,
+		playing: false,
+		timelineData: {
+			tracks: [
+				{
+					type: 'tween',
+					targetPath: 'Child',
+					clips: [{
+						type: 'tween',
+						start: 0,
+						duration: 2,
+						actions: [
+							{ type: 'to', duration: 1, props: { x: 100 } },
+							{ type: 'by', duration: 1, props: { y: 50 } },
+						],
+					}],
+				},
+			],
+		},
+	});
+	assert(res.ok && child.x === 100 && child.y === 25, 'tween sequence/to/by sampling failed');
+	call('stop-preview', {});
+
+	res = call('preview-timeline', {
+		time: 0.5,
+		playing: false,
+		timelineData: {
+			tracks: [
+				{
+					type: 'tween',
+					targetPath: 'Child',
+					clips: [{
+						type: 'tween',
+						start: 0,
+						duration: 1,
+						actions: [
+							{
+								type: 'parallel',
+								actions: [
+									{ type: 'to', duration: 1, props: { x: 100 } },
+									{ type: 'to', duration: 1, props: { y: 200 } },
+								],
+							},
+						],
+					}],
+				},
+			],
+		},
+	});
+	assert(res.ok && child.x === 50 && child.y === 100, 'tween parallel sampling failed');
+	call('stop-preview', {});
+
+	res = call('preview-timeline', {
+		time: 2.5,
+		playing: false,
+		timelineData: {
+			tracks: [
+				{
+					type: 'tween',
+					targetPath: 'Child',
+					clips: [{
+						type: 'tween',
+						start: 0,
+						duration: 3,
+						actions: [
+							{ type: 'repeat', times: 3, actions: [{ type: 'by', duration: 1, props: { x: 10 } }] },
+						],
+					}],
+				},
+			],
+		},
+	});
+	assert(res.ok && child.x === 25, 'tween repeat/by sampling failed');
+	call('stop-preview', {});
+
+	res = call('preview-timeline', {
+		time: 0.25,
+		playing: false,
+		timelineData: {
+			tracks: [
+				{
+					type: 'tween',
+					targetPath: 'Child',
+					clips: [{
+						type: 'tween',
+						start: 0,
+						duration: 1,
+						actions: [
+							{ type: 'reverseTime', actions: [{ type: 'to', duration: 1, props: { x: 100 } }] },
+						],
+					}],
+				},
+			],
+		},
+	});
+	assert(res.ok && child.x === 75, 'tween reverseTime sampling failed');
+	call('stop-preview', {});
+
+	res = call('preview-timeline', {
+		time: 0.5,
+		playing: false,
+		timelineData: {
+			tracks: [
+				{
+					type: 'tween',
+					targetPath: 'Child',
+					clips: [{
+						type: 'tween',
+						start: 0,
+						duration: 1,
+						actions: [
+							{ type: 'bezierTo', duration: 1, c1: { x: 0, y: 100 }, c2: { x: 100, y: 100 }, to: { x: 100, y: 0 } },
+						],
+					}],
+				},
+			],
+		},
+	});
+	assert(res.ok && Math.abs(child.x - 50) < 0.000001 && Math.abs(child.y - 75) < 0.000001, 'tween bezierTo sampling failed');
+	call('stop-preview', {});
+
+	res = call('preview-timeline', {
+		time: 0,
+		playing: false,
+		timelineData: {
+			tracks: [
+				{
+					type: 'tween',
+					targetPath: 'Child',
+					clips: [{
+						type: 'tween',
+						start: 0,
+						duration: 0.1,
+						actions: [{ type: 'removeSelf' }],
+					}],
+				},
+			],
+		},
+	});
+	assert(res.ok && child.active === false, 'tween removeSelf should deactivate target in preview');
+	call('stop-preview', {});
+	assert(child.active === true, 'tween removeSelf preview restore failed');
+
+	res = call('preview-timeline', {
+		time: 0.1,
+		playing: false,
+		timelineData: {
+			tracks: [
+				{
+					type: 'tween',
+					targetPath: 'Child',
+					clips: [{
+						type: 'tween',
+						start: 0,
+						duration: 0.1,
+						actions: [{ type: 'call', callbackName: 'onTweenCall', params: ['seek'] }],
+					}],
+				},
+			],
+		},
+	});
+	assert(res.ok && callbacks.calls.length === 0, 'tween call should not trigger while scrubbing');
+	res = call('preview-timeline', {
+		time: 0.1,
+		playing: true,
+		timelineData: {
+			tracks: [
+				{
+					type: 'tween',
+					targetPath: 'Child',
+					clips: [{
+						type: 'tween',
+						start: 0,
+						duration: 0.1,
+						actions: [{ type: 'call', callbackName: 'onTweenCall', params: ['play'] }],
+					}],
+				},
+			],
+		},
+	});
+	assert(res.ok && callbacks.calls.length === 1 && callbacks.calls[0][0] === 'play', 'tween call did not trigger during playback');
+	res = call('preview-timeline', {
+		time: 0.1,
+		playing: true,
+		timelineData: {
+			tracks: [
+				{
+					type: 'tween',
+					targetPath: 'Child',
+					clips: [{
+						type: 'tween',
+						start: 0,
+						duration: 0.1,
+						actions: [{ type: 'call', callbackName: 'onTweenCall', params: ['play'] }],
+					}],
+				},
+			],
+		},
+	});
+	assert(res.ok && callbacks.calls.length === 1, 'tween call should only trigger once per playback pass');
+	call('stop-preview', {});
+
+	res = call('preview-timeline', {
 		time: 0.5,
 		playing: false,
 		timelineData: {
@@ -386,6 +665,25 @@ function verifyScenePreview() {
 	assert(skeleton.entry.trackIndex === 1, 'spine track index not applied');
 	assert(skeleton.entry.trackTime === 0.5, 'spine clip should sample local time with speed');
 	assert(skeleton._state.applied > 0, 'spine state not applied');
+
+	res = call('query-clip-durations', {
+		timelineData: {
+			tracks: [
+				{
+					type: 'animation',
+					targetPath: 'Child',
+					clips: [
+						{ type: 'animation', clipName: 'run' },
+						{ type: 'spine', animName: 'walk' },
+						{ type: 'audio', audioUrl: 'audio/sound.mp3' },
+					],
+				},
+			],
+		},
+	});
+	assert(res.ok, 'query clip durations failed');
+	const durations = res.clips.map((clip) => clip.duration).sort();
+	assert(durations.join(',') === '2,3,4.5', 'resource clip durations did not resolve');
 }
 
 function verifyPrefabBinding() {
@@ -452,6 +750,13 @@ function verifyRuntimeTemplates() {
 	const player = read('templates/runtime/TimelinePlayer.ts');
 	assert(player.indexOf('private sampleAnimation') !== -1, 'runtime animation sampling missing');
 	assert(player.indexOf('private sampleSpine') !== -1, 'runtime spine sampling missing');
+	assert(player.indexOf('prop === "active"') !== -1, 'runtime tween active support missing');
+	assert(player.indexOf('getTweenActionDuration') !== -1, 'runtime tween action duration support missing');
+	assert(player.indexOf('private applyTweenActionList') !== -1, 'runtime tween action sampler missing');
+	assert(player.indexOf('private applyTweenCallAction') !== -1, 'runtime tween call support missing');
+	assert(player.indexOf('bezierNumber') !== -1 && player.indexOf('private applyTweenBezierAction') !== -1, 'runtime tween bezier support missing');
+	assert(player.indexOf('type === "removeSelf"') !== -1, 'runtime tween removeSelf support missing');
+	assert(player.indexOf('mode?: string') === -1 && player.indexOf('from?: Record') === -1, 'runtime should not expose legacy tween clip fields');
 	assert(player.indexOf('case "animation"') === -1, 'runtime should not trigger animation as one-shot clip');
 }
 

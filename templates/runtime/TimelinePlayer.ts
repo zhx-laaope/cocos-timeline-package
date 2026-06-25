@@ -10,14 +10,12 @@ export interface TimelineClip {
 	start: number;
 	duration: number;
 	enabled?: boolean;
+	actions?: any[] | Record<string, any>;
 	clipName?: string;
 	animName?: string;
 	speed?: number;
 	loop?: boolean;
 	trackIndex?: number;
-	props?: Record<string, any>;
-	from?: Record<string, any> | null;
-	easing?: string;
 	callbackName?: string;
 	params?: any[];
 	audioUrl?: string;
@@ -189,6 +187,78 @@ function lerp(from: number, to: number, progress: number): number {
 	return from + (to - from) * progress;
 }
 
+function bezierNumber(c1: number, c2: number, c3: number, c4: number, progress: number): number {
+	const t = clamp01(progress);
+	const t1 = 1 - t;
+	return t1 * (t1 * (c1 + (c2 * 3 - c1) * t) + c3 * 3 * t * t) + c4 * t * t * t;
+}
+
+function readTweenVec2(value: any, fallback: { x: number; y: number }): { x: number; y: number } {
+	const source = value && typeof value === "object" ? value : {};
+	return {
+		x: toNumber(source.x === undefined ? fallback.x : source.x, 0),
+		y: toNumber(source.y === undefined ? fallback.y : source.y, 0),
+	};
+}
+
+function isTweenActionClip(clip: TimelineClip): boolean {
+	return !!(clip && (Array.isArray(clip.actions) || (clip.actions && typeof clip.actions === "object")));
+}
+
+function asTweenActionArray(actions: any): any[] {
+	if (Array.isArray(actions)) return actions;
+	if (actions && typeof actions === "object") return [actions];
+	return [];
+}
+
+function getTweenActionChildren(action: any): any[] {
+	if (!action || typeof action !== "object") return [];
+	if (Array.isArray(action.actions)) return action.actions;
+	if (Array.isArray(action.sequence)) return action.sequence;
+	if (Array.isArray(action.parallel)) return action.parallel;
+	if (action.action && typeof action.action === "object") return [action.action];
+	return [];
+}
+
+function getTweenActionDuration(action: any, fallbackDuration: number): number {
+	if (!action || typeof action !== "object") return 0;
+	const type = action.type || "to";
+	const duration = Math.max(0, toNumber(action.duration, 0));
+
+	if (type === "sequence" || type === "then") {
+		return getTweenActionsDuration(getTweenActionChildren(action), fallbackDuration);
+	}
+	if (type === "parallel" || type === "spawn") {
+		return getTweenActionChildren(action).reduce((max: number, child: any) => {
+			return Math.max(max, getTweenActionDuration(child, fallbackDuration));
+		}, 0);
+	}
+	if (type === "repeat") {
+		return getTweenActionsDuration(getTweenActionChildren(action), fallbackDuration) * Math.max(0, parseInt(action.times, 10) || 0);
+	}
+	if (type === "repeatForever") {
+		return duration || Math.max(0, fallbackDuration || 0);
+	}
+	if (type === "reverseTime") {
+		return getTweenActionsDuration(getTweenActionChildren(action), fallbackDuration);
+	}
+	if (type === "delay" || type === "to" || type === "by" || type === "blink" || type === "bezierTo" || type === "bezierBy") {
+		return duration;
+	}
+	return 0;
+}
+
+function getTweenActionsDuration(actions: any, fallbackDuration: number): number {
+	return asTweenActionArray(actions).reduce((total: number, action: any) => {
+		return total + getTweenActionDuration(action, fallbackDuration);
+	}, 0);
+}
+
+function getTweenClipActions(clip: TimelineClip): any[] {
+	const actions = isTweenActionClip(clip) ? asTweenActionArray(clip.actions) : [];
+	return actions.length > 0 ? actions : [{ type: "delay", duration: toNumber(clip.duration, 0) }];
+}
+
 function getClipSampleTime(clip: TimelineClip, localTime: number, duration: number): number {
 	let sampleTime = Math.max(0, localTime * toNumber(clip.speed, 1));
 	if (clip.loop && duration > 0) {
@@ -327,7 +397,13 @@ export default class TimelinePlayer {
 					continue;
 				}
 				if (type === "tween") {
-					this.applyTween(node, clip, this.currentTime - toNumber(clip.start, 0));
+					this.applyTween(
+						node,
+						clip,
+						this.currentTime - toNumber(clip.start, 0),
+						playing,
+						`${trackIndex}:${clipIndex}:${clip.id || clip.name || "tween"}`,
+					);
 					continue;
 				}
 
@@ -535,56 +611,379 @@ export default class TimelinePlayer {
 		this.audioIds.length = 0;
 	}
 
-	private applyTween(node: cc.Node, clip: TimelineClip, localTime: number): void {
-		const duration = Math.max(0.0001, toNumber(clip.duration, 0.0001));
-		const progress = ease(clip.easing, localTime / duration);
-		const props = clip.props || {};
-		const from = clip.from || {};
-		const snapshot = this.snapshots[node.uuid];
-
-		Object.keys(props).forEach((prop) => {
-			const fromValue = Object.prototype.hasOwnProperty.call(from, prop)
-				? from[prop]
-				: this.getSnapshotProp(snapshot, prop);
-			this.applyTweenProp(node, prop, fromValue, props[prop], progress);
-		});
+	private applyTween(node: cc.Node, clip: TimelineClip, localTime: number, playing: boolean = false, keyPrefix: string = "tween"): void {
+		this.applyTweenActionList(node, getTweenClipActions(clip), localTime, toNumber(clip.duration, 0), playing, keyPrefix, "root");
 	}
 
-	private getSnapshotProp(snapshot: NodeSnapshot | undefined, prop: string): any {
-		if (!snapshot) return undefined;
-		if (prop === "rotation") return snapshot.rotation;
-		if (prop === "angle") return snapshot.angle;
-		return (snapshot as any)[prop];
+	private cloneTweenValue(value: any): any {
+		if (value instanceof cc.Color) return new cc.Color(value.r, value.g, value.b, value.a);
+		if (value && typeof value === "object") {
+			if (value.r !== undefined && value.g !== undefined && value.b !== undefined) {
+				return { r: value.r, g: value.g, b: value.b, a: value.a };
+			}
+			if (value.x !== undefined || value.y !== undefined || value.z !== undefined) {
+				return {
+					x: toNumber(value.x, 0),
+					y: toNumber(value.y, 0),
+					z: toNumber(value.z, 0),
+				};
+			}
+		}
+		return value;
 	}
 
-	private applyTweenProp(node: cc.Node, prop: string, fromValue: any, toValue: any, progress: number): void {
+	private getTweenPropValue(node: cc.Node, prop: string): any {
+		const anyNode = node as any;
+		if (prop === "active") return node.active;
+		if (prop === "rotation") return getNodeRotation(node);
+		if (prop === "angle") return getNodeAngle(node);
+		if (prop === "position") {
+			return { x: toNumber(anyNode.x, 0), y: toNumber(anyNode.y, 0), z: toNumber(anyNode.z, 0) };
+		}
+		if (prop === "scale") {
+			if (typeof anyNode.scale !== "undefined") return anyNode.scale;
+			return { x: toNumber(anyNode.scaleX, 0), y: toNumber(anyNode.scaleY, 0) };
+		}
+		if (prop === "color") return cloneColor(node.color);
+		return this.cloneTweenValue(anyNode[prop]);
+	}
+
+	private setTweenPropValue(node: cc.Node, prop: string, value: any): boolean {
+		const anyNode = node as any;
+		if (prop === "active") {
+			node.active = !!value;
+			return true;
+		}
+		if (prop === "rotation") return setNodeRotation(node, value);
+		if (prop === "angle") return setNodeAngle(node, value);
+		if (prop === "position") {
+			if (!value || typeof value !== "object") return false;
+			if (value.x !== undefined) anyNode.x = toNumber(value.x, 0);
+			if (value.y !== undefined) anyNode.y = toNumber(value.y, 0);
+			if (value.z !== undefined && typeof anyNode.z !== "undefined") anyNode.z = toNumber(value.z, 0);
+			return true;
+		}
+		if (prop === "scale") {
+			if (typeof value === "number") {
+				if (typeof anyNode.scale !== "undefined") anyNode.scale = value;
+				if (typeof anyNode.scaleX !== "undefined") anyNode.scaleX = value;
+				if (typeof anyNode.scaleY !== "undefined") anyNode.scaleY = value;
+				return true;
+			}
+			if (value && typeof value === "object") {
+				if (value.x !== undefined && typeof anyNode.scaleX !== "undefined") anyNode.scaleX = toNumber(value.x, 0);
+				if (value.y !== undefined && typeof anyNode.scaleY !== "undefined") anyNode.scaleY = toNumber(value.y, 0);
+				return true;
+			}
+			return false;
+		}
 		if (prop === "color") {
-			const fromColor = parseColor(fromValue || this.getSnapshotProp(this.snapshots[node.uuid], "color"));
-			const toColor = parseColor(toValue);
-			if (!fromColor || !toColor) return;
-			node.color = new cc.Color(
+			const color = parseColor(value);
+			if (!color) return false;
+			node.color = color;
+			return true;
+		}
+		if (typeof anyNode[prop] === "undefined") return false;
+		anyNode[prop] = value;
+		return true;
+	}
+
+	private addTweenValues(fromValue: any, deltaValue: any): any {
+		const fromNumber = Number(fromValue);
+		const deltaNumber = Number(deltaValue);
+		if (isFinite(fromNumber) && isFinite(deltaNumber)) return fromNumber + deltaNumber;
+
+		const fromColor = parseColor(fromValue);
+		const deltaColor = parseColor(deltaValue);
+		if (fromColor && deltaColor) {
+			return new cc.Color(
+				fromColor.r + deltaColor.r,
+				fromColor.g + deltaColor.g,
+				fromColor.b + deltaColor.b,
+				fromColor.a + deltaColor.a,
+			);
+		}
+
+		if (fromValue && deltaValue && typeof fromValue === "object" && typeof deltaValue === "object") {
+			return {
+				x: toNumber(fromValue.x, 0) + toNumber(deltaValue.x, 0),
+				y: toNumber(fromValue.y, 0) + toNumber(deltaValue.y, 0),
+				z: toNumber(fromValue.z, 0) + toNumber(deltaValue.z, 0),
+			};
+		}
+
+		return deltaValue;
+	}
+
+	private interpolateTweenValue(fromValue: any, toValue: any, progress: number): any {
+		if (typeof toValue === "boolean") return toValue;
+
+		const fromColor = parseColor(fromValue);
+		const toColor = parseColor(toValue);
+		if (fromColor && toColor) {
+			return new cc.Color(
 				Math.round(lerp(fromColor.r, toColor.r, progress)),
 				Math.round(lerp(fromColor.g, toColor.g, progress)),
 				Math.round(lerp(fromColor.b, toColor.b, progress)),
 				Math.round(lerp(fromColor.a, toColor.a, progress)),
 			);
-			return;
 		}
 
-		if (prop === "rotation" || prop === "angle") {
-			const fallback = prop === "rotation" ? getNodeRotation(node) : getNodeAngle(node);
-			const fromNumber = toNumber(fromValue, fallback);
-			const toNumberValue = Number(toValue);
-			if (!isFinite(toNumberValue)) return;
-			const value = lerp(fromNumber, toNumberValue, progress);
-			if (prop === "rotation") setNodeRotation(node, value);
-			else setNodeAngle(node, value);
-			return;
-		}
-
-		const fromNumber = toNumber(fromValue, Number((node as any)[prop]) || 0);
+		const fromNumber = Number(fromValue);
 		const toNumberValue = Number(toValue);
-		if (!isFinite(toNumberValue) || typeof (node as any)[prop] === "undefined") return;
-		(node as any)[prop] = lerp(fromNumber, toNumberValue, progress);
+		if (isFinite(fromNumber) && isFinite(toNumberValue)) return lerp(fromNumber, toNumberValue, progress);
+
+		if (fromValue && toValue && typeof fromValue === "object" && typeof toValue === "object") {
+			return {
+				x: lerp(toNumber(fromValue.x, 0), toNumber(toValue.x, 0), progress),
+				y: lerp(toNumber(fromValue.y, 0), toNumber(toValue.y, 0), progress),
+				z: lerp(toNumber(fromValue.z, 0), toNumber(toValue.z, 0), progress),
+			};
+		}
+
+		return progress >= 1 ? toValue : fromValue;
+	}
+
+	private getTweenPropSpec(rawValue: any): { value: any; easing?: string } {
+		if (rawValue && typeof rawValue === "object" && rawValue.value !== undefined && (rawValue.easing || rawValue.progress)) {
+			return {
+				value: rawValue.value,
+				easing: rawValue.easing,
+			};
+		}
+		return { value: rawValue };
+	}
+
+	private collectTweenActionProps(action: any, props: Record<string, boolean>): Record<string, boolean> {
+		if (!action || typeof action !== "object") return props;
+		const type = action.type || "to";
+		if (type === "to" || type === "by" || type === "set") {
+			Object.keys(action.props || {}).forEach((prop) => {
+				props[prop] = true;
+			});
+		}
+		if (type === "show" || type === "hide" || type === "removeSelf") props.active = true;
+		if (type === "flipX") props.scaleX = true;
+		if (type === "flipY") props.scaleY = true;
+		if (type === "blink") props.opacity = true;
+		if (type === "bezierTo" || type === "bezierBy") props.position = true;
+		getTweenActionChildren(action).forEach((child) => this.collectTweenActionProps(child, props));
+		return props;
+	}
+
+	private captureTweenProps(node: cc.Node, props: Record<string, boolean>): Record<string, any> {
+		const snapshot: Record<string, any> = {};
+		Object.keys(props).forEach((prop) => {
+			snapshot[prop] = this.cloneTweenValue(this.getTweenPropValue(node, prop));
+		});
+		return snapshot;
+	}
+
+	private applyTweenProps(node: cc.Node, values: Record<string, any>): void {
+		Object.keys(values).forEach((prop) => {
+			this.setTweenPropValue(node, prop, this.cloneTweenValue(values[prop]));
+		});
+	}
+
+	private applyTweenPropertyAction(node: cc.Node, action: any, localTime: number): void {
+		const type = action.type || "to";
+		const props = action.props && typeof action.props === "object" ? action.props : {};
+		const from = action.from && typeof action.from === "object" ? action.from : {};
+		const duration = Math.max(0.0001, toNumber(action.duration, 0.0001));
+		const normalized = clamp01(localTime / duration);
+
+		Object.keys(props).forEach((prop) => {
+			const spec = this.getTweenPropSpec(props[prop]);
+			const fromValue = Object.prototype.hasOwnProperty.call(from, prop)
+				? from[prop]
+				: this.getTweenPropValue(node, prop);
+			const endValue = type === "by" ? this.addTweenValues(fromValue, spec.value) : spec.value;
+			const progress = ease(spec.easing || action.easing, normalized);
+			this.setTweenPropValue(node, prop, this.interpolateTweenValue(fromValue, endValue, progress));
+		});
+	}
+
+	private applyTweenBezierAction(node: cc.Node, action: any, localTime: number): void {
+		const type = action.type || "bezierTo";
+		const duration = Math.max(0.0001, toNumber(action.duration, 0.0001));
+		const progress = ease(action.easing, clamp01(localTime / duration));
+		const start = this.getTweenPropValue(node, "position");
+		const c1 = readTweenVec2(action.c1 || action.control1, { x: 0, y: 100 });
+		const c2 = readTweenVec2(action.c2 || action.control2, { x: 100, y: 100 });
+		const end = readTweenVec2(action.to || action.end || action.position, { x: 100, y: 0 });
+		const control1 = type === "bezierBy" ? this.addTweenValues(start, c1) : c1;
+		const control2 = type === "bezierBy" ? this.addTweenValues(start, c2) : c2;
+		const target = type === "bezierBy" ? this.addTweenValues(start, end) : end;
+		this.setTweenPropValue(node, "position", {
+			x: bezierNumber(start.x, control1.x, control2.x, target.x, progress),
+			y: bezierNumber(start.y, control1.y, control2.y, target.y, progress),
+		});
+	}
+
+	private applyTweenInstantAction(node: cc.Node, action: any, localTime: number): void {
+		if (localTime < 0) return;
+		const type = action.type || "set";
+		if (type === "set") {
+			const props = action.props && typeof action.props === "object" ? action.props : {};
+			Object.keys(props).forEach((prop) => this.setTweenPropValue(node, prop, props[prop]));
+			return;
+		}
+		if (type === "show") {
+			node.active = true;
+			return;
+		}
+		if (type === "hide") {
+			node.active = false;
+			return;
+		}
+		if (type === "removeSelf") {
+			node.active = false;
+			return;
+		}
+		if (type === "flipX") {
+			(node as any).scaleX *= -1;
+			return;
+		}
+		if (type === "flipY") {
+			(node as any).scaleY *= -1;
+		}
+	}
+
+	private applyTweenCallAction(node: cc.Node, action: any, playing: boolean, key: string): void {
+		if (!playing || this.triggered[key]) return;
+		this.triggered[key] = true;
+		this.triggerCode(node, {
+			callbackName: action.callbackName || action.name,
+			params: Array.isArray(action.params) ? action.params : [],
+			start: 0,
+			duration: 0,
+		});
+	}
+
+	private applyTweenParallelAction(node: cc.Node, action: any, localTime: number, fallbackDuration: number, playing: boolean, keyPrefix: string, path: string): void {
+		const children = getTweenActionChildren(action);
+		if (children.length === 0) return;
+		const propSet: Record<string, boolean> = {};
+		children.forEach((child) => this.collectTweenActionProps(child, propSet));
+		const baseline = this.captureTweenProps(node, propSet);
+		const merged: Record<string, any> = Object.assign({}, baseline);
+
+		children.forEach((child, index) => {
+			this.applyTweenProps(node, baseline);
+			this.applyTweenAction(node, child, Math.min(localTime, getTweenActionDuration(child, fallbackDuration)), fallbackDuration, playing, keyPrefix, `${path}.p${index}`);
+			const childProps = this.collectTweenActionProps(child, {});
+			Object.keys(childProps).forEach((prop) => {
+				merged[prop] = this.cloneTweenValue(this.getTweenPropValue(node, prop));
+			});
+		});
+
+		this.applyTweenProps(node, merged);
+	}
+
+	private applyTweenRepeatAction(node: cc.Node, action: any, localTime: number, fallbackDuration: number, playing: boolean, keyPrefix: string, path: string): void {
+		const children = getTweenActionChildren(action);
+		const childDuration = getTweenActionsDuration(children, fallbackDuration);
+		const times = Math.max(0, parseInt(action.times, 10) || 0);
+		if (children.length === 0 || times <= 0) return;
+		if (childDuration <= 0) {
+			this.applyTweenActionList(node, children, 0, fallbackDuration, playing, keyPrefix, `${path}.r0`);
+			return;
+		}
+		const completed = Math.min(times, Math.floor(Math.max(0, localTime) / childDuration));
+		for (let i = 0; i < completed; i++) {
+			this.applyTweenActionList(node, children, childDuration, fallbackDuration, playing, keyPrefix, `${path}.r${i}`);
+		}
+		if (completed < times) {
+			this.applyTweenActionList(node, children, Math.max(0, localTime - completed * childDuration), fallbackDuration, playing, keyPrefix, `${path}.r${completed}`);
+		}
+	}
+
+	private applyTweenRepeatForeverAction(node: cc.Node, action: any, localTime: number, fallbackDuration: number, playing: boolean, keyPrefix: string, path: string): void {
+		const children = getTweenActionChildren(action);
+		const childDuration = getTweenActionsDuration(children, fallbackDuration);
+		if (children.length === 0) return;
+		if (childDuration <= 0) {
+			this.applyTweenActionList(node, children, 0, fallbackDuration, playing, keyPrefix, `${path}.rf0`);
+			return;
+		}
+		const loops = Math.min(10000, Math.floor(Math.max(0, localTime) / childDuration));
+		for (let i = 0; i < loops; i++) {
+			this.applyTweenActionList(node, children, childDuration, fallbackDuration, playing, keyPrefix, `${path}.rf${i}`);
+		}
+		this.applyTweenActionList(node, children, Math.max(0, localTime - loops * childDuration), fallbackDuration, playing, keyPrefix, `${path}.rf${loops}`);
+	}
+
+	private applyTweenAction(node: cc.Node, action: any, localTime: number, fallbackDuration: number, playing: boolean, keyPrefix: string, path: string): void {
+		if (!action || typeof action !== "object") return;
+		const type = action.type || "to";
+		const duration = getTweenActionDuration(action, fallbackDuration);
+		const clampedTime = Math.max(0, Math.min(localTime, duration || 0));
+
+		if (type === "delay") return;
+		if (type === "call") {
+			if (localTime >= 0) this.applyTweenCallAction(node, action, playing, `${keyPrefix}:call:${path || "call"}`);
+			return;
+		}
+		if (type === "to" || type === "by") {
+			this.applyTweenPropertyAction(node, action, clampedTime);
+			return;
+		}
+		if (type === "bezierTo" || type === "bezierBy") {
+			this.applyTweenBezierAction(node, action, clampedTime);
+			return;
+		}
+		if (type === "set" || type === "show" || type === "hide" || type === "flipX" || type === "flipY" || type === "removeSelf") {
+			this.applyTweenInstantAction(node, action, localTime);
+			return;
+		}
+		if (type === "blink") {
+			const times = Math.max(1, parseInt(action.times, 10) || 1);
+			const slice = 1 / times;
+			const t = duration > 0 ? clamp01(clampedTime / duration) : 1;
+			(node as any).opacity = t >= 1 ? this.getTweenPropValue(node, "opacity") : ((t % slice) > slice / 2 ? 255 : 0);
+			return;
+		}
+		if (type === "sequence" || type === "then") {
+			this.applyTweenActionList(node, getTweenActionChildren(action), clampedTime, fallbackDuration, playing, keyPrefix, path);
+			return;
+		}
+		if (type === "parallel" || type === "spawn") {
+			this.applyTweenParallelAction(node, action, clampedTime, fallbackDuration, playing, keyPrefix, path || "parallel");
+			return;
+		}
+		if (type === "repeat") {
+			this.applyTweenRepeatAction(node, action, clampedTime, fallbackDuration, playing, keyPrefix, path || "repeat");
+			return;
+		}
+		if (type === "repeatForever") {
+			this.applyTweenRepeatForeverAction(node, action, clampedTime, fallbackDuration, playing, keyPrefix, path || "repeatForever");
+			return;
+		}
+		if (type === "reverseTime") {
+			const children = getTweenActionChildren(action);
+			const childDuration = getTweenActionsDuration(children, fallbackDuration);
+			this.applyTweenActionList(node, children, Math.max(0, childDuration - clampedTime), fallbackDuration, playing, keyPrefix, path || "reverseTime");
+		}
+	}
+
+	private applyTweenActionList(node: cc.Node, actions: any, localTime: number, fallbackDuration: number, playing: boolean, keyPrefix: string, pathPrefix: string): void {
+		let cursor = Math.max(0, localTime);
+		asTweenActionArray(actions).forEach((action, index) => {
+			const duration = getTweenActionDuration(action, fallbackDuration);
+			const path = `${pathPrefix || "a"}.${index}`;
+			if (duration <= 0) {
+				if (cursor >= 0) this.applyTweenAction(node, action, 0, fallbackDuration, playing, keyPrefix, path);
+				return;
+			}
+			if (cursor >= duration) {
+				this.applyTweenAction(node, action, duration, fallbackDuration, playing, keyPrefix, path);
+				cursor -= duration;
+				return;
+			}
+			if (cursor >= 0) {
+				this.applyTweenAction(node, action, cursor, fallbackDuration, playing, keyPrefix, path);
+				cursor = -1;
+			}
+		});
 	}
 }

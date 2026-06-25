@@ -42,6 +42,11 @@
 			"methods": [
 				"stopPreview"
 			]
+		},
+		"query-clip-durations": {
+			"methods": [
+				"queryClipDurations"
+			]
 		}
 	}
 }
