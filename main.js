@@ -1,13 +1,14 @@
-'use strict';
+"use strict";
 
-const Fs = require('fs');
-const Path = require('path');
+const Fs = require("fs");
+const Path = require("path");
 
 const PREFAB_NAME_CACHE = Object.create(null);
 
 function normalizeUuid(uuid) {
-	if (!uuid || typeof uuid !== 'string') return '';
+	if (!uuid || typeof uuid !== "string") return "";
 	let result = uuid;
+
 	try {
 		if (Editor.Utils && Editor.Utils.UuidUtils && Editor.Utils.UuidUtils.decompressUuid) {
 			result = Editor.Utils.UuidUtils.decompressUuid(uuid) || uuid;
@@ -39,10 +40,10 @@ function uuidToPrefabUrl(uuid) {
 
 function readMetaUuid(fspath) {
 	try {
-		const meta = JSON.parse(Fs.readFileSync(fspath + '.meta', 'utf8'));
-		return meta.uuid || '';
+		const meta = JSON.parse(Fs.readFileSync(fspath + ".meta", "utf8"));
+		return meta.uuid || "";
 	} catch (err) {
-		return '';
+		return "";
 	}
 }
 
@@ -50,7 +51,7 @@ function fspathToUrl(fspath) {
 	try {
 		return Editor.assetdb.fspathToUrl(fspath);
 	} catch (err) {
-		return '';
+		return "";
 	}
 }
 
@@ -60,8 +61,8 @@ function findPrefabByRootName(rootName) {
 		return PREFAB_NAME_CACHE[rootName];
 	}
 
-	const assetsRoot = Path.join(Editor.Project.path, 'assets');
-	const targetFile = rootName + '.prefab';
+	const assetsRoot = Path.join(Editor.Project.path, "assets");
+	const targetFile = rootName + ".prefab";
 	const matches = [];
 
 	function walk(dir) {
@@ -75,7 +76,7 @@ function findPrefabByRootName(rootName) {
 		for (const entry of entries) {
 			const full = Path.join(dir, entry.name);
 			if (entry.isDirectory()) {
-				if (entry.name === '.git' || entry.name === 'node_modules') continue;
+				if (entry.name === ".git" || entry.name === "node_modules") continue;
 				walk(full);
 				continue;
 			}
@@ -107,15 +108,13 @@ function findPrefabByRootName(rootName) {
 }
 
 function getSelectedPrefab(rootName) {
-	const selection = Editor.Selection && Editor.Selection.curSelection
-		? Editor.Selection.curSelection('asset')
-		: [];
+	const selection = Editor.Selection && Editor.Selection.curSelection ? Editor.Selection.curSelection("asset") : [];
 
 	for (const uuid of selection || []) {
 		const prefab = uuidToPrefabUrl(uuid);
 		if (!prefab) continue;
 
-		const name = Path.basename(prefab.url, '.prefab');
+		const name = Path.basename(prefab.url, ".prefab");
 		if (!rootName || name === rootName || selection.length === 1) {
 			return prefab;
 		}
@@ -126,7 +125,7 @@ function getSelectedPrefab(rootName) {
 function resolvePrefabAsset(rawContext) {
 	const candidates = rawContext && rawContext.candidateUuids ? rawContext.candidateUuids : [];
 	for (const uuid of candidates) {
-		if (!uuid || typeof uuid !== 'string') continue;
+		if (!uuid || typeof uuid !== "string") continue;
 		const prefab = uuidToPrefabUrl(uuid);
 		if (prefab) return prefab;
 	}
@@ -141,30 +140,30 @@ function reply(event, err, data) {
 }
 
 module.exports = {
-	'scene-script': 'scene-script.js',
+	"scene-script": "scene-script.js",
 
 	load() {
-		Editor.log('[UI Timeline Editor] 加载成功');
+		Editor.log("[UI Timeline Editor] 加载成功");
 	},
 
 	unload() {
-		Editor.log('[UI Timeline Editor] 卸载');
+		Editor.log("[UI Timeline Editor] 卸载");
 	},
 
 	open() {
-		Editor.Panel.open('ui-timeline-editor');
+		Editor.Panel.open("ui-timeline-editor");
 	},
 
 	queryPrefabContext(event) {
 		if (!Editor.Scene || !Editor.Scene.callSceneScript) {
 			reply(event, null, {
 				inPrefab: false,
-				reason: '当前 Creator 不支持查询 prefab 编辑态',
+				reason: "当前 Creator 不支持查询 prefab 编辑态",
 			});
 			return;
 		}
 
-		Editor.Scene.callSceneScript('ui-timeline-editor', 'query-prefab-context', (err, rawContext) => {
+		Editor.Scene.callSceneScript("ui-timeline-editor", "query-prefab-context", (err, rawContext) => {
 			if (err) {
 				reply(event, null, {
 					inPrefab: false,
@@ -176,25 +175,33 @@ module.exports = {
 			if (!rawContext || !rawContext.inPrefab) {
 				reply(event, null, {
 					inPrefab: false,
-					modeName: rawContext && rawContext.modeName ? rawContext.modeName : '',
+					modeName: rawContext && rawContext.modeName ? rawContext.modeName : "",
 				});
 				return;
 			}
 
 			const prefab = resolvePrefabAsset(rawContext);
 			if (!prefab) {
-				reply(event, null, Object.assign({}, rawContext, {
-					prefabUuid: '',
-					prefabUrl: '',
-					reason: '已进入 prefab 编辑态，但未能定位对应 prefab 资源',
-				}));
+				reply(
+					event,
+					null,
+					Object.assign({}, rawContext, {
+						prefabUuid: "",
+						prefabUrl: "",
+						reason: "已进入 prefab 编辑态，但未能定位对应 prefab 资源",
+					}),
+				);
 				return;
 			}
 
-			reply(event, null, Object.assign({}, rawContext, {
-				prefabUuid: prefab.uuid || '',
-				prefabUrl: prefab.url,
-			}));
+			reply(
+				event,
+				null,
+				Object.assign({}, rawContext, {
+					prefabUuid: prefab.uuid || "",
+					prefabUrl: prefab.url,
+				}),
+			);
 		});
 	},
 
@@ -202,12 +209,12 @@ module.exports = {
 		if (!Editor.Scene || !Editor.Scene.callSceneScript) {
 			reply(event, null, {
 				ok: false,
-				warnings: ['当前 Creator 不支持 SceneScript 调用'],
+				warnings: ["当前 Creator 不支持 SceneScript 调用"],
 			});
 			return;
 		}
 
-		Editor.Scene.callSceneScript('ui-timeline-editor', method, payload || {}, (err, result) => {
+		Editor.Scene.callSceneScript("ui-timeline-editor", method, payload || {}, (err, result) => {
 			if (err) {
 				reply(event, null, {
 					ok: false,
@@ -220,36 +227,36 @@ module.exports = {
 	},
 
 	previewTimeline(event, payload) {
-		this.callTimelineSceneScript(event, 'preview-timeline', payload);
+		this.callTimelineSceneScript(event, "preview-timeline", payload);
 	},
 
 	stopPreview(event) {
-		this.callTimelineSceneScript(event, 'stop-preview', {});
+		this.callTimelineSceneScript(event, "stop-preview", {});
 	},
 
 	queryClipDurations(event, payload) {
-		this.callTimelineSceneScript(event, 'query-clip-durations', payload);
+		this.callTimelineSceneScript(event, "query-clip-durations", payload);
 	},
 
 	messages: {
-		'open'() {
+		open() {
 			this.open();
 		},
 
-		'query-prefab-context'(event) {
+		"query-prefab-context"(event) {
 			this.queryPrefabContext(event);
 		},
 
-		'preview-timeline'(event, payload) {
+		"preview-timeline"(event, payload) {
 			this.previewTimeline(event, payload);
 		},
 
-		'stop-preview'(event) {
+		"stop-preview"(event) {
 			this.stopPreview(event);
 		},
 
-		'query-clip-durations'(event, payload) {
+		"query-clip-durations"(event, payload) {
 			this.queryClipDurations(event, payload);
-		}
-	}
+		},
+	},
 };
